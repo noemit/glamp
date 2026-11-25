@@ -1227,6 +1227,7 @@ dialog::backdrop {
   }
   .toolbar-actions {
     flex: 1 0 100%;
+    min-width: 0;
     gap: 7px;
   }
   .toolbar-actions .search {
