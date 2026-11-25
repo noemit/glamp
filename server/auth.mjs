@@ -5,7 +5,7 @@ const DAY = 24 * 60 * 60 * 1000;
 const cookie = 'glamp_session';
 const sha = value => createHash('sha256').update(value).digest();
 const equal = (left, right) => timingSafeEqual(sha(left), sha(right));
-const ownerKey = () => (process.env.GLAMP_OWNER_TOKEN || '').length >= 32 ? process.env.GLAMP_OWNER_TOKEN : null;
+const ownerKey = () => (process.env.GLAMP_OWNER_TOKEN || '').length >= 15 ? process.env.GLAMP_OWNER_TOKEN : null;
 const validAgent = token => (process.env.GLAMP_AGENT_TOKEN_HASHES || '').split(',').some(hash =>
   /^[0-9a-f]{64}$/i.test(hash.trim()) && timingSafeEqual(sha(token), Buffer.from(hash.trim(), 'hex')));
 const sign = payload => createHmac('sha256', ownerKey()).update(`glamp-session-v1:${payload}`).digest('base64url');

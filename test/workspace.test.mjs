@@ -12,7 +12,7 @@ test('private workspace: agent submits a plan; owner reviews it; agent sees Done
   process.env.NODE_ENV = 'test';
   process.env.GLAMP_DATA_DIR = await mkdtemp(join(tmpdir(), 'glamp-workspace-'));
   t.after(() => rm(process.env.GLAMP_DATA_DIR, { recursive:true, force:true }));
-  const agent = randomBytes(32).toString('hex'), owner = randomBytes(32).toString('hex');
+  const agent = randomBytes(32).toString('hex'), owner = randomBytes(12).toString('base64url').slice(0, 15);
   process.env.GLAMP_OWNER_TOKEN = owner;
   process.env.GLAMP_AGENT_TOKEN_HASHES = createHash('sha256').update(agent).digest('hex');
   const {default: app} = await import('../index.mjs');
@@ -26,6 +26,12 @@ test('private workspace: agent submits a plan; owner reviews it; agent sees Done
   assert.equal((await req('/api/cards')).status, 401);
   assert.equal((await req('/api/session', 'POST', { token:agent })).status, 401);
   assert.equal((await req('/api/session', 'POST', { token:owner }, {origin:'https://unrelated.example'})).status, 403);
+  for (const length of [13, 14]) {
+    const short = owner.slice(0, length);
+    process.env.GLAMP_OWNER_TOKEN = short;
+    assert.equal((await req('/api/session', 'POST', {token:short})).status, 503);
+  }
+  process.env.GLAMP_OWNER_TOKEN = owner;
   const session = await req('/api/session', 'POST', {token:owner});
   assert.equal(session.status, 200);
   const cookie = session.headers.get('set-cookie').split(';')[0];
