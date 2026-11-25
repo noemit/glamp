@@ -4,6 +4,8 @@ A small project space for humans and their agents. Your agent submits a Markdown
 
 **One workspace per deployment.** The source is public under the MIT license. The workspace, uploaded images, and push subscriptions are private.
 
+![Glamp board with four example cards, including a packing list waiting for review.](docs/board.png)
+
 ## One card, several views
 
 | View | What appears there |
