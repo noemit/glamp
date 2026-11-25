@@ -3,7 +3,12 @@ import { enablePush } from './push.js';
 const $ = (id) => document.getElementById(id);
 const dialog = $('dialog');
 const statuses = { open: 'Open', review: 'Needs review', done: 'Done' };
-const views = { docs: 'All cards', board: 'Board', todos: 'To-dos', calendar: 'Calendar' };
+const views = {
+  docs: 'Notes and tasks',
+  todos: 'To-dos',
+  board: 'Board',
+  calendar: 'Calendar',
+};
 const state = {
   owner: false,
   epoch: 0,
@@ -13,6 +18,12 @@ const state = {
   loadError: '',
   month: new Date(),
   selectedDay: '',
+  todoDay: '',
+  filters: {
+    type: 'all',
+    time: 'all',
+    status: 'all',
+  },
 };
 let listVersion = 0,
   sheetVersion = 0,
@@ -24,12 +35,21 @@ const idPattern = /^[a-zA-Z0-9_-]{1,128}$/;
 const uri = (id) => `/?card=${encodeURIComponent(id)}`;
 const cardAPI = (id) => `/api/cards/${encodeURIComponent(id)}`;
 const dateFormat = new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+const shortDateFormat = new Intl.DateTimeFormat(undefined, { day: '2-digit', month: '2-digit', year: 'numeric' });
 const monthFormat = new Intl.DateTimeFormat(undefined, { month: 'long', year: 'numeric' });
 const dayKey = (d) =>
   `${String(d.getFullYear()).padStart(4, '0')}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 const localDate = (key) => new Date(`${key}T12:00:00`);
+const offsetDay = (base, delta) => {
+  const d = new Date(base.getFullYear(), base.getMonth(), base.getDate() + delta);
+  return dayKey(d);
+};
+
 function displayDate(date) {
   return Number.isFinite(date.valueOf()) ? dateFormat.format(date) : '—';
+}
+function compactDate(date) {
+  return Number.isFinite(date.valueOf()) ? shortDateFormat.format(date).replaceAll('/', '.') : '—';
 }
 function scheduleText(card) {
   const start = card.startingDate,
@@ -37,6 +57,28 @@ function scheduleText(card) {
   if (start && end && start !== end)
     return `${displayDate(localDate(start))} – ${displayDate(localDate(end))}`;
   return start || end ? `${start ? 'Scheduled' : 'Due'} ${displayDate(localDate(start || end))}` : '';
+}
+function cardTimeBucket(card, now = new Date()) {
+  const start = card.startingDate || card.endingDate;
+  const end = card.endingDate || card.startingDate;
+  if (!start) return 'unscheduled';
+  const today = dayKey(now);
+  if (start <= today && today <= end) return 'today';
+  if (start > today) return 'upcoming';
+  return 'past';
+}
+function timePillInfo(card, now = new Date()) {
+  const start = card.startingDate || card.endingDate;
+  const end = card.endingDate || card.startingDate;
+  if (!start) return null;
+  const today = dayKey(now);
+  const tomorrow = offsetDay(now, 1);
+  const yesterday = offsetDay(now, -1);
+  if (start <= today && today <= end) return { label: 'Today', cls: 'time-today' };
+  if (start === tomorrow) return { label: 'Tomorrow', cls: 'time-tomorrow' };
+  if (end === yesterday) return { label: 'Yesterday', cls: 'time-past' };
+  if (start > today) return { label: 'Upcoming', cls: 'time-upcoming' };
+  return { label: 'Past', cls: 'time-past' };
 }
 
 // Data is always inserted as text. No card, filename, status, or server error is HTML.
@@ -60,7 +102,7 @@ function button(label, onClick, cls = 'btn', glyph) {
   const b = node('button', cls);
   b.type = 'button';
   if (glyph) b.append(icon(glyph));
-  b.append(label);
+  if (label) b.append(label);
   b.addEventListener('click', onClick);
   return b;
 }
@@ -81,6 +123,10 @@ function badge(status) {
     `status ${Object.hasOwn(statuses, status) ? status : 'open'}`,
     statuses[status] || 'Open',
   );
+}
+function timePill(card) {
+  const info = timePillInfo(card);
+  return info ? node('span', `pill ${info.cls}`, info.label) : null;
 }
 function message(error) {
   return error instanceof TypeError
@@ -109,7 +155,7 @@ async function request(path, options = {}, privateData = true) {
   const data = res.status === 204 ? null : await res.json().catch(() => null);
   if (epoch !== state.epoch) throw stale;
   if (privateData && (res.status === 401 || res.status === 403)) {
-    lock('Your session has ended. Sign in to open the notebook again.');
+    lock('Your session has ended. Sign in to open the workspace again.');
     throw stale;
   }
   if (!res.ok)
@@ -123,6 +169,30 @@ const json = (method, value) => ({
   headers: { 'Content-Type': 'application/json' },
   body: JSON.stringify(value),
 });
+
+function resetFilters() {
+  state.filters = { type: 'all', time: 'all', status: 'all' };
+  $('filter-type').value = 'all';
+  $('filter-time').value = 'all';
+  $('filter-status').value = 'all';
+  syncFilterChips();
+}
+
+function syncFilterChips() {
+  const isTodos = state.view === 'todos';
+  const isBoard = state.view === 'board';
+  $('chip-type-wrap').hidden = isTodos;
+  $('chip-status-wrap').hidden = isBoard;
+  $('chip-type-wrap').classList.toggle('active', !isTodos && state.filters.type !== 'all');
+  $('chip-time-wrap').classList.toggle('active', state.filters.time !== 'all');
+  $('chip-status-wrap').classList.toggle('active', !isBoard && state.filters.status !== 'all');
+  const active =
+    (!isTodos && state.filters.type !== 'all') ||
+    state.filters.time !== 'all' ||
+    (!isBoard && state.filters.status !== 'all');
+  $('filter-clear').hidden = !active;
+}
+
 function lock(reason = '') {
   ++state.epoch;
   ++authVersion;
@@ -137,7 +207,10 @@ function lock(reason = '') {
   state.view = 'docs';
   state.month = new Date();
   state.selectedDay = '';
+  state.todoDay = '';
+  resetFilters();
   $('workspace').hidden = true;
+  $('views').hidden = true;
   $('account').hidden = true;
   if (dialog.open) dialog.close();
   $('detail').replaceChildren();
@@ -145,6 +218,8 @@ function lock(reason = '') {
   $('notice').textContent = '';
   sheetMessage('');
   $('search').value = '';
+  $('quick-input').value = '';
+  $('quick-add').classList.remove('has-text');
   $('token').value = '';
   $('card-count').textContent = '';
   $('login-error').textContent = reason;
@@ -155,6 +230,7 @@ function lock(reason = '') {
   $('gate').hidden = false;
   $('login').disabled = false;
 }
+
 async function checkSession(restore = false) {
   const check = ++authVersion;
   try {
@@ -172,7 +248,9 @@ async function checkSession(restore = false) {
     $('private-label').hidden = true;
     $('boot').hidden = true;
     $('workspace').hidden = false;
+    $('views').hidden = false;
     $('account').hidden = false;
+    syncFilterChips();
     refresh();
     syncLocation();
     $('login').disabled = false;
@@ -180,6 +258,7 @@ async function checkSession(restore = false) {
     if (error !== stale && check === authVersion) lock(message(error));
   }
 }
+
 $('login-form').addEventListener('submit', async (e) => {
   e.preventDefault();
   if ($('login').disabled) return;
@@ -203,6 +282,7 @@ $('login-form').addEventListener('submit', async (e) => {
     $('login').disabled = false;
   }
 });
+
 $('logout').addEventListener('click', async () => {
   lock();
   replaceCardURL(null);
@@ -213,12 +293,13 @@ $('logout').addEventListener('click', async () => {
   } catch (error) {
     if (error !== stale)
       $('login-error').textContent =
-        'Notebook hidden, but sign-out could not be confirmed. Reconnect and sign out again.';
+        'Workspace hidden, but sign-out could not be confirmed. Reconnect and sign out again.';
   } finally {
     $('login').disabled = false;
     $('token').focus();
   }
 });
+
 sessionChannel?.addEventListener('message', (e) => {
   if (e.data === 'signed-out') lock('Signed out in another tab.');
 });
@@ -234,6 +315,7 @@ window.addEventListener('pageshow', (e) => {
 });
 document.addEventListener('visibilitychange', recheck);
 setInterval(recheck, 60000);
+
 $('push').addEventListener('click', async () => {
   const epoch = state.epoch;
   $('push').disabled = true;
@@ -251,6 +333,70 @@ $('push').addEventListener('click', async () => {
       notify(message(error));
     }
   }
+});
+
+// Quick capture bar
+$('quick-input').addEventListener('input', () => {
+  $('quick-add').classList.toggle('has-text', Boolean($('quick-input').value.trim()));
+});
+$('quick-expand').addEventListener('click', () => {
+  const draft = $('quick-input').value.trim();
+  $('quick-input').value = '';
+  $('quick-add').classList.remove('has-text');
+  showEditor(null, draft);
+});
+$('quick-add').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const title = $('quick-input').value.trim();
+  if (!title) {
+    showEditor(null);
+    return;
+  }
+  const submitBtn = $('quick-submit');
+  if (submitBtn.disabled) return;
+  submitBtn.disabled = true;
+  try {
+    const isTask = state.view === 'todos';
+    const startingDate = isTask && state.todoDay ? state.todoDay : null;
+    await request(
+      '/api/cards',
+      json('POST', { title, body: '', status: 'open', isTask, startingDate, endingDate: null }),
+    );
+    $('quick-input').value = '';
+    $('quick-add').classList.remove('has-text');
+    notify(isTask ? 'To-do added.' : 'Card added.');
+    await refresh();
+  } catch (error) {
+    if (error !== stale && state.owner) notify(message(error));
+  } finally {
+    submitBtn.disabled = false;
+  }
+});
+
+// Filter toggle & chips
+$('filter-toggle').addEventListener('click', () => {
+  const bar = $('filter-bar');
+  bar.hidden = !bar.hidden;
+  $('filter-toggle').setAttribute('aria-expanded', String(!bar.hidden));
+});
+$('filter-type').addEventListener('change', (e) => {
+  state.filters.type = e.target.value;
+  syncFilterChips();
+  render();
+});
+$('filter-time').addEventListener('change', (e) => {
+  state.filters.time = e.target.value;
+  syncFilterChips();
+  render();
+});
+$('filter-status').addEventListener('change', (e) => {
+  state.filters.status = e.target.value;
+  syncFilterChips();
+  render();
+});
+$('filter-clear').addEventListener('click', () => {
+  resetFilters();
+  render();
 });
 
 // A single server query feeds every view, including calendar and board.
@@ -286,9 +432,11 @@ $('views').addEventListener('click', (e) => {
   const tab = e.target.closest('[data-view]');
   if (!tab) return;
   state.view = tab.dataset.view;
+  syncFilterChips();
   render();
 });
 $('add').addEventListener('click', () => showEditor(null));
+
 function empty(title, description, glyph, action) {
   const wrap = node('div', 'empty'),
     stamp = node('span', 'empty-mark');
@@ -297,39 +445,73 @@ function empty(title, description, glyph, action) {
   if (action) wrap.append(action);
   return wrap;
 }
+
+function hasActiveFilters() {
+  const isTodos = state.view === 'todos';
+  const isBoard = state.view === 'board';
+  return (
+    Boolean($('search').value.trim()) ||
+    (!isTodos && state.filters.type !== 'all') ||
+    state.filters.time !== 'all' ||
+    (!isBoard && state.filters.status !== 'all')
+  );
+}
+
+function applyFilters(cards) {
+  const now = new Date();
+  return cards.filter((card) => {
+    if (state.view === 'todos' && !card.isTask) return false;
+    if (state.view !== 'todos') {
+      if (state.filters.type === 'note' && card.isTask) return false;
+      if (state.filters.type === 'task' && !card.isTask) return false;
+    }
+    if (state.view !== 'board' && state.filters.status !== 'all' && card.status !== state.filters.status)
+      return false;
+    if (state.filters.time !== 'all' && cardTimeBucket(card, now) !== state.filters.time) return false;
+    return true;
+  });
+}
+
 function blankState() {
-  if ($('search').value.trim())
+  if (hasActiveFilters())
     return empty(
       'No matching cards',
-      'Try another keyword, or clear your search to see everything.',
+      'Try adjusting your search or filter pills to see more cards.',
       'search',
-      button('Clear search', () => {
+      button('Clear filters', () => {
         $('search').value = '';
+        resetFilters();
         refresh();
         $('search').focus();
       }),
     );
   const tasks = state.view === 'todos';
   return empty(
-    tasks ? 'No to-dos yet' : 'A fresh page',
+    tasks ? 'No to-dos yet' : 'Your workspace is clear',
     tasks
-      ? 'Turn any card into a to-do, or add one here.'
-      : 'Add your first card for a note, a plan, or something to do.',
+      ? 'Type a quick task above or create a new to-do card.'
+      : 'Capture a quick thought above or add your first card for a note, plan, or to-do.',
     tasks ? 'task' : 'book',
-    button(tasks ? 'Add a to-do' : 'Add the first card', () => showEditor(null), 'btn', 'plus'),
+    button(tasks ? 'Add a to-do' : 'Add the first card', () => showEditor(null), 'btn primary', 'plus'),
   );
 }
+
 function render() {
   if (!state.owner) return;
   for (const tab of $('views').querySelectorAll('button')) {
     if (tab.dataset.view === state.view) tab.setAttribute('aria-current', 'page');
     else tab.removeAttribute('aria-current');
   }
-  $('view-title').textContent = views[state.view];
+  const titleText = views[state.view];
+  $('workspace-title').textContent = titleText;
+  $('view-title').textContent = titleText;
+  $('quick-input').placeholder =
+    state.view === 'todos' ? 'Add a new to-do…' : 'What’s on your mind today?';
+
   const results = $('results');
   results.replaceChildren();
   results.setAttribute('aria-busy', String(!state.loaded && !state.loadError));
-  const cards = state.view === 'todos' ? state.cards.filter((c) => c.isTask) : state.cards;
+  const cards = applyFilters(state.cards);
   $('card-count').textContent = state.loaded ? String(cards.length) : '';
   if (state.loadError) {
     results.append(empty('Could not load cards', state.loadError, 'book', button('Try again', refresh)));
@@ -341,41 +523,111 @@ function render() {
   }
   if (state.view === 'board') results.append(boardView(cards));
   else if (state.view === 'calendar') results.append(calendarView(cards));
+  else if (state.view === 'todos') results.append(todoView(cards));
   else if (!cards.length) results.append(blankState());
-  else results.append(state.view === 'todos' ? todoView(cards) : docsView(cards));
+  else results.append(docsView(cards));
 }
-function preview(card) {
-  return (
-    (card.body || '').replace(/\s+/g, ' ').trim().slice(0, 180) ||
-    (card.isTask ? 'To-do card' : 'Notebook card')
-  );
+
+function parseBodyPreview(card) {
+  const raw = card.body || '';
+  const lines = raw.split(/\r?\n/);
+  const checks = [];
+  const prose = [];
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    const match = /^[-*]\s+\[([ xX])\]\s+(.+)$/.exec(trimmed);
+    if (match) {
+      if (checks.length < 2) checks.push({ checked: match[1].toLowerCase() === 'x', text: match[2].trim() });
+    } else {
+      prose.push(trimmed.replace(/^#+\s*/, ''));
+    }
+  }
+  const snippet = prose.join(' ').replace(/\s+/g, ' ').trim().slice(0, 220);
+  return {
+    snippet: snippet || (!checks.length ? (card.isTask ? 'To-do card' : 'Note card') : ''),
+    checks,
+  };
 }
+
+function toggleTaskCheckbox(card, check) {
+  check.addEventListener('change', async () => {
+    check.disabled = true;
+    const next = check.checked ? 'done' : 'open';
+    try {
+      await request(cardAPI(card.id), json('PATCH', { status: next }));
+      await refresh();
+      $('results')
+        .querySelector(`[data-todo="${CSS.escape(card.id)}"]`)
+        ?.focus();
+    } catch (error) {
+      if (error !== stale && state.owner) {
+        check.checked = !check.checked;
+        check.disabled = false;
+        notify(message(error));
+      }
+    }
+  });
+}
+
 function docsView(cards) {
-  const list = node('div', 'list');
-  const head = node('div', 'list-label');
-  head.setAttribute('aria-hidden', 'true');
-  for (const label of ['Card', 'Created', 'Status', '']) head.append(node('span', '', label));
-  list.append(head);
+  const feed = node('div', 'card-feed');
   for (const card of cards) {
-    const row = node('article', 'entry'),
-      main = node('div', 'entry-main'),
-      text = node('div', 'entry-text');
+    const item = node('article', `card-item${card.isTask && card.status === 'done' ? ' done-task' : ''}`);
+    const top = node('div', 'card-top');
+    const left = node('div', 'card-top-left');
+    const right = node('div', 'card-top-right');
+
     const stamp = node('span', `stamp${card.isTask ? ' task' : ''}`);
     stamp.append(icon(card.isTask ? 'task' : 'doc'));
-    text.append(cardLink(card), node('p', 'snippet', preview(card)));
-    main.append(stamp, text);
+
+    const pills = node('span', 'card-pills');
+    const tp = timePill(card);
+    if (tp) pills.append(tp);
+    pills.append(badge(card.status));
+
+    left.append(stamp, cardLink(card), pills);
+
     const arrow = icon('next');
     arrow.classList.add('chev');
-    row.append(
-      main,
-      node('span', 'secondary-line created', displayDate(new Date(card.createdAt))),
-      badge(card.status),
-      arrow,
-    );
-    list.append(row);
+    right.append(node('span', 'card-date', compactDate(new Date(card.createdAt))), arrow);
+    top.append(left, right);
+    item.append(top);
+
+    const { snippet, checks } = parseBodyPreview(card);
+    if (snippet) item.append(node('p', 'card-snippet', snippet));
+
+    if (checks.length) {
+      const checkWrap = node('div', 'card-check-preview');
+      for (const c of checks) {
+        const row = node('div', `card-check-row${c.checked ? ' checked' : ''}`);
+        row.append(node('span', `mini-box${c.checked ? ' checked' : ''}`), node('span', '', c.text));
+        checkWrap.append(row);
+      }
+      item.append(checkWrap);
+    }
+
+    if (card.isTask) {
+      const bar = node('div', 'card-task-bar');
+      const check = node('input');
+      check.type = 'checkbox';
+      check.checked = card.status === 'done';
+      check.dataset.todo = card.id;
+      check.setAttribute('aria-label', `Mark ${card.title} ${check.checked ? 'open' : 'done'}`);
+      toggleTaskCheckbox(card, check);
+      const labelText =
+        card.status === 'done'
+          ? 'Completed'
+          : scheduleText(card) || (card.status === 'review' ? 'Waiting for review' : 'Mark complete');
+      bar.append(check, node('span', 'card-task-meta', labelText));
+      item.append(bar);
+    }
+
+    feed.append(item);
   }
-  return list;
+  return feed;
 }
+
 function boardView(cards) {
   const lanes = node('div', 'board');
   for (const [status, label] of Object.entries(statuses)) {
@@ -384,61 +636,164 @@ function boardView(cards) {
     lane.setAttribute('aria-label', label);
     const head = node('div', 'lane-head');
     const heading = node('h3', 'sr-only', label);
-    head.append(heading, badge(status), node('span', 'count', group.length));
+    head.append(heading, badge(status), node('span', 'count', String(group.length)));
     lane.append(head);
-    if (!group.length) lane.append(node('p', 'lane-empty', 'No cards here.'));
+    if (!group.length) lane.append(node('p', 'lane-empty', 'No cards here yet.'));
     for (const card of group) {
       const item = node('article', 'lane-card');
-      item.append(
-        node('span', 'lane-caption', card.isTask ? 'To-do' : 'Note'),
-        cardLink(card),
-        node('p', 'snippet', preview(card)),
-      );
+      const top = node('div', 'lane-card-top');
+      const stamp = node('span', `stamp${card.isTask ? ' task' : ''}`);
+      stamp.append(icon(card.isTask ? 'task' : 'doc'));
+      top.append(stamp);
+      const tp = timePill(card);
+      if (tp) top.append(tp);
+      else top.append(node('span', 'card-date', compactDate(new Date(card.createdAt))));
+
+      const { snippet } = parseBodyPreview(card);
+      item.append(top, cardLink(card), node('p', 'snippet', snippet || 'No notes yet.'));
       lane.append(item);
     }
     lanes.append(lane);
   }
   return lanes;
 }
+
+function weekDaysStartingMonday(now = new Date()) {
+  const dow = (now.getDay() + 6) % 7; // Mon=0 .. Sun=6
+  const monday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - dow);
+  const labels = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+  return labels.map((dowLabel, idx) => {
+    const date = new Date(monday.getFullYear(), monday.getMonth(), monday.getDate() + idx);
+    return { dowLabel, date, key: dayKey(date), num: date.getDate() };
+  });
+}
+
 function todoView(cards) {
-  const list = node('div', 'list todo-list');
-  list.append(
-    node(
-      'div',
-      'todo-head',
-      `${cards.filter((c) => c.status === 'done').length} of ${cards.length} complete`,
-    ),
+  const shell = node('div', 'todo-shell');
+  const now = new Date();
+  const today = dayKey(now);
+  const week = weekDaysStartingMonday(now);
+
+  // Weekly strip inspired by Image 3
+  const stripWrap = node('section', 'week-strip-wrap');
+  stripWrap.setAttribute('aria-label', 'This week');
+  const stripHead = node('div', 'week-strip-head');
+  stripHead.append(node('span', 'week-month', monthFormat.format(now)));
+  if (state.todoDay) {
+    stripHead.append(
+      button(
+        'Show all to-dos',
+        () => {
+          state.todoDay = '';
+          render();
+        },
+        'chip-reset',
+      ),
+    );
+  }
+  stripWrap.append(stripHead);
+
+  const strip = node('div', 'week-strip');
+  for (const d of week) {
+    const dayCards = entriesOn(cards, d.key).map((e) => e.card);
+    const doneCount = dayCards.filter((c) => c.status === 'done').length;
+    const openCount = dayCards.length - doneCount;
+    let tone = '';
+    if (dayCards.length) tone = openCount === 0 ? ' all-done' : ' has-open';
+    const isSelected = state.todoDay === d.key;
+    const cls = `week-day${tone}${d.key === today ? ' is-today' : ''}${isSelected ? ' is-selected' : ''}`;
+    const btn = node('button', cls);
+    btn.type = 'button';
+    btn.setAttribute('aria-pressed', String(isSelected));
+    btn.setAttribute(
+      'aria-label',
+      `${displayDate(d.date)}, ${openCount} open, ${doneCount} done`,
+    );
+    btn.addEventListener('click', () => {
+      state.todoDay = state.todoDay === d.key ? '' : d.key;
+      render();
+    });
+    btn.append(node('span', 'week-day-dow', d.dowLabel), node('span', 'week-day-cap', String(d.num)));
+    const stats = node('div', 'week-day-stats');
+    if (dayCards.length) {
+      stats.append(
+        node('span', openCount ? 'stat-open' : '', `• ${openCount}`),
+        node('span', doneCount ? 'stat-done' : '', `✓ ${doneCount}`),
+      );
+    } else {
+      stats.append(node('span', '', '—'));
+    }
+    btn.append(stats);
+    strip.append(btn);
+  }
+  stripWrap.append(strip);
+  shell.append(stripWrap);
+
+  const visible = state.todoDay ? entriesOn(cards, state.todoDay).map((e) => e.card) : cards;
+  const sheetCard = node('section', 'todo-card-sheet');
+  const head = node('div', 'todo-sheet-head');
+  const titleWrap = node('div', 'todo-sheet-title');
+  const headingText = state.todoDay
+    ? state.todoDay === today
+      ? 'To-Do Today'
+      : displayDate(localDate(state.todoDay))
+    : 'To-Do Today';
+  const doneTotal = visible.filter((c) => c.status === 'done').length;
+  titleWrap.append(
+    node('h3', '', headingText),
+    node('span', 'todo-progress', `${doneTotal} / ${visible.length}`),
   );
-  for (const card of cards) {
-    const row = node('article', `entry${card.status === 'done' ? ' done-task' : ''}`),
-      text = node('div', 'entry-text');
+  head.append(titleWrap, button('New to-do', () => showEditor(null), 'btn outline', 'plus'));
+  sheetCard.append(head);
+
+  if (!visible.length) {
+    const emptyBox = state.todoDay
+      ? empty(
+          'Nothing scheduled for this day',
+          'Pick another day on the strip or show all to-dos.',
+          'task',
+          button('Show all to-dos', () => {
+            state.todoDay = '';
+            render();
+          }),
+        )
+      : blankState();
+    shell.append(emptyBox);
+    return shell;
+  }
+
+  const list = node('div', 'todo-list');
+  for (const card of visible) {
+    const row = node('article', `todo-row${card.status === 'done' ? ' done-task' : ''}`);
     const check = node('input');
     check.type = 'checkbox';
     check.checked = card.status === 'done';
     check.dataset.todo = card.id;
     check.setAttribute('aria-label', `Mark ${card.title} ${check.checked ? 'open' : 'done'}`);
-    check.addEventListener('change', async () => {
-      check.disabled = true;
-      const next = check.checked ? 'done' : 'open';
-      try {
-        await request(cardAPI(card.id), json('PATCH', { status: next }));
-        await refresh();
-        $('results')
-          .querySelector(`[data-todo="${CSS.escape(card.id)}"]`)
-          ?.focus();
-      } catch (error) {
-        if (error !== stale && state.owner) {
-          check.checked = !check.checked;
-          check.disabled = false;
-          notify(message(error));
-        }
-      }
-    });
-    text.append(cardLink(card), node('p', 'snippet', scheduleText(card) || preview(card)));
-    row.append(check, text, badge(card.status));
+    toggleTaskCheckbox(card, check);
+
+    const body = node('div', 'todo-row-body');
+    const subCls =
+      card.status === 'done' ? 'todo-sub is-done' : card.status === 'review' ? 'todo-sub is-review' : 'todo-sub';
+    const subText =
+      card.status === 'done'
+        ? '✓ Completed'
+        : card.status === 'review'
+          ? 'Ready for review'
+          : scheduleText(card) || parseBodyPreview(card).snippet;
+    body.append(cardLink(card), node('p', subCls, subText));
+
+    const badges = node('div', 'todo-row-badges');
+    const tp = timePill(card);
+    if (tp) badges.append(tp);
+    badges.append(badge(card.status));
+
+    row.append(check, body, badges);
     list.append(row);
   }
-  return list;
+  sheetCard.append(list);
+  shell.append(sheetCard);
+  return shell;
 }
 
 // Bound work to the displayed month rather than expanding a potentially years-long range.
@@ -458,6 +813,7 @@ function entriesOn(cards, day) {
   }
   return entries;
 }
+
 function calendarView(cards) {
   const frag = document.createDocumentFragment(),
     cal = node('div', 'calendar'),
@@ -525,7 +881,8 @@ function calendarView(cards) {
     if (entries.length)
       cell.append(node('span', `day-dot${entries.some((e) => e.scheduled) ? ' scheduled' : ''}`));
     for (const { card, scheduled, reason } of entries) {
-      const link = cardLink(card, `day-event${scheduled ? ' scheduled' : ''}`);
+      const evCls = `day-event${card.status === 'done' ? ' done' : scheduled ? ' scheduled' : ''}`;
+      const link = cardLink(card, evCls);
       link.title = `${card.title} · ${reason}`;
       cell.append(link);
     }
@@ -537,7 +894,9 @@ function calendarView(cards) {
   const ul = node('ul');
   for (const entry of entriesOn(cards, selected)) {
     const li = node('li');
-    li.append(cardLink(entry.card), node('span', 'help', entry.reason));
+    const meta = node('span', 'card-pills');
+    meta.append(node('span', 'help', entry.reason), badge(entry.card.status));
+    li.append(cardLink(entry.card), meta);
     ul.append(li);
   }
   agenda.append(ul.childElementCount ? ul : node('p', 'help', 'No cards on this day.'));
@@ -609,7 +968,7 @@ async function openCard(id) {
     sheet('Card unavailable');
     $('detail').append(
       node('p', 'intro', message(error)),
-      button('Return to notebook', () => closeSheet()),
+      button('Return to workspace', () => closeSheet()),
     );
   }
 }
@@ -662,7 +1021,12 @@ function showCard(card) {
   const heading = sheet(card.title),
     detail = $('detail');
   const top = node('div', 'detail-top');
-  top.append(badge(card.status), node('span', '', card.isTask ? 'To-do card' : 'Notebook card'));
+  top.append(
+    badge(card.status),
+    node('span', `pill ${card.isTask ? 'kind-task' : 'kind-note'}`, card.isTask ? 'To-do' : 'Note'),
+  );
+  const tp = timePill(card);
+  if (tp) top.append(tp);
   heading.before(top);
   const meta = node('div', 'detail-meta');
   meta.append(node('span', '', `Created ${displayDate(new Date(card.createdAt))}`));
@@ -688,7 +1052,7 @@ function showCard(card) {
       }
     }
   };
-  actions.append(button('Edit', () => showEditor(card), 'btn', 'edit'));
+  actions.append(button('Edit', () => showEditor(card), 'btn soft', 'edit'));
   if (card.status !== 'done') actions.append(button('Mark done', () => statusAction('done'), 'btn', 'check'));
   if (card.status !== 'review')
     actions.append(button('Send to review', () => statusAction('review'), 'btn', 'review'));
@@ -841,19 +1205,19 @@ function editorInput(tag, name, value) {
   input.value = value ?? '';
   return input;
 }
-function showEditor(card) {
+function showEditor(card, draftTitle = '') {
   const version = ++sheetVersion;
   sheet(card ? 'Edit card' : 'New card');
   const form = node('form'),
     fields = node('div', 'fields');
-  const title = editorInput('input', 'title', card?.title);
+  const title = editorInput('input', 'title', card?.title ?? draftTitle);
   title.required = true;
   title.maxLength = 200;
   title.placeholder = 'Give this card a title';
   const body = editorInput('textarea', 'body', card?.body);
   body.maxLength = 20000;
   body.rows = 5;
-  body.placeholder = 'Write your notes or plan…';
+  body.placeholder = 'Write your notes, plan, or checklist (- [ ] item)…';
   const bodyField = field('Body', body),
     hint = node('p', 'help', 'Paste a card link into your notes, or use [label](/?card=id).');
   hint.id = 'link-hint';

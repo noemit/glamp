@@ -3,9 +3,9 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="theme-color" content="#103632" />
-    <meta name="description" content="Glamp is a private field notebook for notes, plans, and to-dos." />
-    <title>Glamp · Field notebook</title>
+    <meta name="theme-color" content="#6c4ef6" />
+    <meta name="description" content="Glamp is a private workspace for notes, plans, and to-dos." />
+    <title>Glamp · Notes &amp; Tasks</title>
     <link rel="manifest" href="/manifest.webmanifest" />
     <link rel="icon" href="/icons/glamp.svg" type="image/svg+xml" />
     <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
@@ -14,164 +14,125 @@
   </head>
   <body>
     <a class="skip" href="#main">Skip to content</a>
-    <!-- A small, locally drawn stamp and a two-colour landscape for the notebook cover. -->
     <svg xmlns="http://www.w3.org/2000/svg" class="symbols" aria-hidden="true" focusable="false">
       <symbol id="i-tent" viewBox="0 0 24 24">
-        <path d="m3 18 7.6-12L17 18Zm7.6-12L15 4l7 12.2-5 1.8M8 18l2.6-5 2.4 5" />
+        <path d="m3.5 18.5 8.5-13 8.5 13H3.5Z" />
+        <path d="M9.5 18.5 12 13l2.5 5.5" />
       </symbol>
       <symbol id="i-lock" viewBox="0 0 24 24">
-        <rect x="5" y="10" width="14" height="11" rx="2" />
+        <rect x="5" y="10" width="14" height="11" rx="2.5" />
         <path d="M8 10V7a4 4 0 0 1 8 0v3m-4 5v2" />
       </symbol>
       <symbol id="i-doc" viewBox="0 0 24 24">
-        <path d="M14 3H6a1 1 0 0 0-1 1v16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V8Zm0 0v6h5M8.5 13h7m-7 3.5h5" />
+        <path d="M14 3.5H7a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8.5Zm0 0V8.5h5M8.5 13h7m-7 3.5h4.5" />
       </symbol>
       <symbol id="i-book" viewBox="0 0 24 24">
-        <path d="M5 4h14v16H6a2 2 0 0 1-2-2V5a1 1 0 0 1 1-1Zm3 0v16m3-12h5" />
+        <path d="M4 6.5A2.5 2.5 0 0 1 6.5 4H10l2 2h5.5A2.5 2.5 0 0 1 20 8.5v9a2.5 2.5 0 0 1-2.5 2.5h-11A2.5 2.5 0 0 1 4 17.5Z" />
       </symbol>
       <symbol id="i-board" viewBox="0 0 24 24">
-        <rect x="3" y="4" width="7" height="15" rx="1.5" />
-        <rect x="14" y="4" width="7" height="10" rx="1.5" />
+        <rect x="3.5" y="4" width="7" height="16" rx="2" />
+        <rect x="13.5" y="4" width="7" height="11" rx="2" />
       </symbol>
       <symbol id="i-task" viewBox="0 0 24 24">
-        <rect x="3.5" y="3.5" width="17" height="17" rx="3" />
-        <path d="m7.5 12 3 3 6-6" />
+        <rect x="3.5" y="3.5" width="17" height="17" rx="4.5" />
+        <path d="m8 12.2 2.7 2.8 5.6-6" />
       </symbol>
       <symbol id="i-calendar" viewBox="0 0 24 24">
-        <rect x="3" y="5" width="18" height="16" rx="2" />
-        <path d="M7 3v5m10-5v5M3 10h18m-13 4h2m4 0h2" />
+        <rect x="3.5" y="5" width="17" height="15.5" rx="3" />
+        <path d="M8 3.2v3.6m8-3.6v3.6M3.5 10h17m-12 4h2m3.5 0h2" />
       </symbol>
       <symbol id="i-search" viewBox="0 0 24 24">
-        <circle cx="10" cy="10" r="6.5" />
-        <path d="m15 15 5.5 5.5" />
+        <circle cx="10.5" cy="10.5" r="6.5" />
+        <path d="m15.5 15.5 5 5" />
+      </symbol>
+      <symbol id="i-filter" viewBox="0 0 24 24">
+        <path d="M4 6h16l-6.2 7.2v5.3l-3.6 1.5v-6.8Z" />
+      </symbol>
+      <symbol id="i-send" viewBox="0 0 24 24">
+        <path d="M4.5 12h15m-6-6 6 6-6 6" />
       </symbol>
       <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14" /></symbol>
-      <symbol id="i-arrow" viewBox="0 0 24 24"><path d="M4 12h15m-6-6 6 6-6 6" /></symbol>
-      <symbol id="i-next" viewBox="0 0 24 24"><path d="m9 5 7 7-7 7" /></symbol>
-      <symbol id="i-prev" viewBox="0 0 24 24"><path d="m15 5-7 7 7 7" /></symbol>
+      <symbol id="i-arrow" viewBox="0 0 24 24"><path d="M5 12h14m-6-6 6 6-6 6" /></symbol>
+      <symbol id="i-next" viewBox="0 0 24 24"><path d="m9.5 6 6 6-6 6" /></symbol>
+      <symbol id="i-prev" viewBox="0 0 24 24"><path d="m14.5 6-6 6 6 6" /></symbol>
       <symbol id="i-close" viewBox="0 0 24 24"><path d="m6 6 12 12M6 18 18 6" /></symbol>
       <symbol id="i-bell" viewBox="0 0 24 24">
-        <path d="M5 17h14l-1.6-3V9a5.4 5.4 0 0 0-10.8 0v5ZM10 20a2.5 2.5 0 0 0 4 0" />
+        <path d="M5.5 17h13l-1.5-3V9.5a5 5 0 0 0-10 0V14ZM10 20a2.2 2.2 0 0 0 4 0" />
       </symbol>
-      <symbol id="i-exit" viewBox="0 0 24 24"><path d="M10 4H5v16h5m-1-8h12m-4-4 4 4-4 4" /></symbol>
+      <symbol id="i-exit" viewBox="0 0 24 24"><path d="M10 4.5H6a1.5 1.5 0 0 0-1.5 1.5v12A1.5 1.5 0 0 0 6 19.5h4M9 12h11m-4-4 4 4-4 4" /></symbol>
       <symbol id="i-edit" viewBox="0 0 24 24">
-        <path d="m4 15 11.5-11.5a2 2 0 0 1 3 0l2 2a2 2 0 0 1 0 3L9 20l-6 1Zm9.5-9.5 5 5" />
+        <path d="m4.5 15.5 11-11a2 2 0 0 1 2.8 0l1.2 1.2a2 2 0 0 1 0 2.8l-11 11-4.8 1Z" />
       </symbol>
       <symbol id="i-link" viewBox="0 0 24 24">
         <path
-          d="m10 13 4-4m-5 6-2 2a3.5 3.5 0 0 1-5-5l4-4a3.5 3.5 0 0 1 5 0m2 1 2-2a3.5 3.5 0 1 1 5 5l-4 4a3.5 3.5 0 0 1-5 0"
+          d="m10 14 4-4m-5 6-1.8 1.8a3.5 3.5 0 0 1-5-5L4 11a3.5 3.5 0 0 1 5 0m2 1 1.8-1.8a3.5 3.5 0 1 1 5 5L16 17a3.5 3.5 0 0 1-5 0"
         />
       </symbol>
-      <symbol id="i-check" viewBox="0 0 24 24"><path d="m4 12 5.5 5.5L20 6.5" /></symbol>
+      <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12.5 4.8 4.8L19.5 7.5" /></symbol>
       <symbol id="i-image" viewBox="0 0 24 24">
-        <rect x="3" y="3" width="18" height="18" rx="2" />
-        <circle cx="8" cy="8" r="1.4" />
-        <path d="m4 17 4-4 3 3 4-7 6 8" />
+        <rect x="3.5" y="4" width="17" height="16" rx="2.5" />
+        <circle cx="8.5" cy="9" r="1.4" />
+        <path d="m4.5 17 4-4 3 3 3.5-6 5 7" />
       </symbol>
       <symbol id="i-review" viewBox="0 0 24 24">
-        <path d="M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12Z" />
+        <path d="M2.5 12s3.8-6.5 9.5-6.5S21.5 12 21.5 12s-3.8 6.5-9.5 6.5S2.5 12 2.5 12Z" />
         <circle cx="12" cy="12" r="2.5" />
       </symbol>
-      <symbol id="pine" viewBox="0 0 38 80">
-        <path
-          fill="#244c42"
-          d="m19 1 9 22-4-1 8 16-6-2 10 19-10-3 12 17-17-4v13h-4V65L0 68l11-17-9 3 10-19-6 2 8-15-4 1Z"
-        />
-        <path
-          fill="none"
-          stroke="#91a58e"
-          stroke-width="1"
-          d="M19 17v45m0-32-5 4m5 8 6-6m-6 13-9 4m9 5 9-6"
-        />
-      </symbol>
-      <symbol id="camp" viewBox="0 0 460 208">
-        <circle cx="319" cy="56" r="27" fill="#db9158" />
-        <g fill="none" stroke="#c0bfa6" stroke-width="1.5" stroke-linecap="round">
-          <path d="M16 111c30-7 41-5 64-3m-54-4q18-5 30-4m335-39h33m-45 5h30M176 63h31m-50 6h24" />
-        </g>
-        <path
-          fill="#c4cbb1"
-          d="m10 144 71-54 30 18 33-24 27 12 62-66 33 42 18-10 41 39 22-16 100 62-24 11H24Z"
-        />
-        <path fill="#f5f1df" d="m196 69 37-39 33 42-22-13-4 7-9-14-13 18 2-13Z" />
-        <path
-          fill="#8fa891"
-          d="m28 151 45-12 50-29 28 4 26-20 29-9 20-16-28 38-39 36 49-23 22-7 34-32 36 19 16-8 29 14 25-10 79 50-73 17Z"
-        />
-        <path fill="#618674" d="M9 155q62-20 108-9t92-12q79-37 136-21 36 6 106 38l-32 12-214-11Z" />
-        <g opacity=".85">
-          <use href="#pine" x="294" y="72" width="28" height="64" />
-          <use href="#pine" x="308" y="62" width="36" height="78" />
-          <use href="#pine" x="334" y="90" width="21" height="49" />
-        </g>
-        <path
-          fill="#d5d5b9"
-          d="M2 163q69-20 142-15t120-9q89-22 188 16l-28 9q-66-10-146 2-68 13-158 4-75-7-118-7Z"
-        />
-        <path
-          fill="#244c42"
-          d="M26 166q77-5 141 3 50 8 118-5 62-11 130-1-71-1-130 10-64 13-128 3-61-9-131-10Z"
-        />
-        <use href="#pine" x="54" y="77" width="39" height="86" />
-        <use href="#pine" x="32" y="106" width="25" height="55" />
-        <g stroke="#5c4c32" stroke-linejoin="round" stroke-linecap="round" stroke-width="1.8">
-          <path fill="#d38c50" d="m207 108 48-11 33 55-57 9Z" />
-          <path fill="#edce8d" d="m173 155 34-47 24 53Z" />
-          <path fill="#3e4e3d" d="m185 155 20-31 5 34Z" />
-          <path
-            fill="none"
-            d="m206 107-2-5m4 6 3-6m43-6 2-4m-49 17-45 49m94-60 47 57m-130 1-10 1m123-5 13 3"
-          />
-        </g>
-        <g fill="none" stroke="#a77647" stroke-width="1.1">
-          <path d="m221 119 16 35m-10-36 17 35m-10-37 17 35m-10-36 17 35m-11-36 17 35" />
-        </g>
-        <g fill="none" stroke="#829682" stroke-width="1.1" stroke-linecap="round">
-          <path
-            d="m78 178 33 1m-15 5 39 1m127-2 26-2m22-8 32-2m-180 17 40 2m168-27 17 1m-268-11 15 1m20-1 8 1"
-          />
-        </g>
-      </symbol>
     </svg>
+
     <header class="masthead">
       <div class="shell mast-inner">
         <div class="brand">
-          <span class="brand-mark"
-            ><svg class="icon" aria-hidden="true"><use href="#i-tent" /></svg></span
-          >Glamp
+          <span class="brand-mark">
+            <svg class="icon" aria-hidden="true"><use href="#i-tent" /></svg>
+          </span>
+          <span class="brand-name">Glamp</span>
         </div>
-        <span class="brand-note">Field notebook</span>
-        <span id="private-label" class="quiet header-right"
-          ><svg class="icon" aria-hidden="true"><use href="#i-lock" /></svg> Private workspace</span
-        >
+        <nav id="views" class="views" aria-label="Workspace views" hidden>
+          <button data-view="docs" aria-current="page" type="button">
+            <svg class="icon" aria-hidden="true"><use href="#i-book" /></svg><span>Notes</span>
+          </button>
+          <button data-view="todos" type="button">
+            <svg class="icon" aria-hidden="true"><use href="#i-task" /></svg><span>To-dos</span>
+          </button>
+          <button data-view="board" type="button">
+            <svg class="icon" aria-hidden="true"><use href="#i-board" /></svg><span>Board</span>
+          </button>
+          <button data-view="calendar" type="button">
+            <svg class="icon" aria-hidden="true"><use href="#i-calendar" /></svg><span>Calendar</span>
+          </button>
+        </nav>
+        <span id="private-label" class="pill-tag header-right">
+          <svg class="icon" aria-hidden="true"><use href="#i-lock" /></svg> Private
+        </span>
         <div id="account" class="header-right" hidden>
           <button id="push" class="btn ghost" type="button">
             <svg class="icon" aria-hidden="true"><use href="#i-bell" /></svg><span>Enable push</span>
           </button>
           <button id="logout" class="btn ghost" type="button">
-            <svg class="icon" aria-hidden="true"><use href="#i-exit" /></svg>Sign out
+            <svg class="icon" aria-hidden="true"><use href="#i-exit" /></svg><span>Sign out</span>
           </button>
         </div>
       </div>
     </header>
+
     <main id="main" class="shell" tabindex="-1">
-      <p id="boot" class="boot quiet" role="status">Opening notebook…</p>
-      <noscript><p>Enable JavaScript to open this notebook.</p></noscript>
+      <p id="boot" class="boot quiet" role="status">Opening workspace…</p>
+      <noscript><p class="boot">Enable JavaScript to open this workspace.</p></noscript>
+
       <section id="gate" class="gate" hidden aria-labelledby="gate-title">
-        <div class="cover">
-          <div class="cover-rule"><span>FIELD NOTES</span><span>Nº 01</span></div>
-          <div class="cover-title">Field notebook</div>
-          <div class="cover-sub">A workspace for notes, plans, and to-dos.</div>
-          <svg class="cover-art" viewBox="0 0 460 208" aria-hidden="true"><use href="#camp" /></svg>
-          <div class="plate"><span>Fig. 01</span><i>Base camp</i></div>
-        </div>
-        <div class="gate-form">
-          <p class="eyebrow"><span class="small-rule"></span>Owner access</p>
-          <h1 id="gate-title">Open your notebook.</h1>
-          <p class="intro">Sign in with your workspace’s owner token.</p>
+        <div class="gate-card">
+          <div class="gate-badge">
+            <span class="brand-mark large">
+              <svg class="icon" aria-hidden="true"><use href="#i-tent" /></svg>
+            </span>
+          </div>
+          <span class="pill-tag soft-violet">Owner access</span>
+          <h1 id="gate-title">Welcome back to Glamp</h1>
+          <p class="intro">Sign in with your workspace owner token to view your notes, plans, and to-dos.</p>
           <form id="login-form">
-            <label for="token">Owner token</label
-            ><input
+            <label for="token">Owner token</label>
+            <input
               id="token"
               name="token"
               type="password"
@@ -182,73 +143,110 @@
               autocapitalize="none"
             />
             <p id="login-error" class="error-text" role="alert"></p>
-            <button id="login" type="submit" class="btn primary">
-              Sign in <svg class="icon" aria-hidden="true"><use href="#i-arrow" /></svg>
+            <button id="login" type="submit" class="btn primary full">
+              <span>Sign in</span>
+              <svg class="icon" aria-hidden="true"><use href="#i-arrow" /></svg>
             </button>
           </form>
         </div>
       </section>
-      <section id="workspace" hidden aria-labelledby="workspace-title">
-        <div class="hero">
-          <div>
-            <p class="eyebrow"><span class="small-rule"></span>Workspace 01</p>
-            <h1 id="workspace-title" tabindex="-1">Field notebook</h1>
-            <p class="intro">Your notes, plans, and to-dos, all in one place.</p>
-          </div>
-          <figure class="hero-plate">
-            <svg viewBox="0 0 460 208" aria-hidden="true"><use href="#camp" /></svg>
-            <figcaption><span>Fig. 01</span> Base camp</figcaption>
-          </figure>
-        </div>
-        <nav id="views" class="views" aria-label="Notebook views">
-          <button data-view="docs" aria-current="page">
-            <svg class="icon" aria-hidden="true"><use href="#i-book" /></svg>Docs
-          </button>
-          <button data-view="board">
-            <svg class="icon" aria-hidden="true"><use href="#i-board" /></svg>Board
-          </button>
-          <button data-view="todos">
-            <svg class="icon" aria-hidden="true"><use href="#i-task" /></svg>To-dos
-          </button>
-          <button data-view="calendar">
-            <svg class="icon" aria-hidden="true"><use href="#i-calendar" /></svg>Calendar
-          </button>
-        </nav>
-        <div class="toolbar">
-          <div class="section-heading">
-            <h2 id="view-title">All cards</h2>
+
+      <section id="workspace" class="workspace-sheet" hidden aria-labelledby="workspace-title">
+        <div class="sheet-header">
+          <div class="sheet-title-group">
+            <h1 id="workspace-title" tabindex="-1">Notes and tasks</h1>
+            <button id="filter-toggle" class="icon-chip" type="button" aria-expanded="true" aria-controls="filter-bar" aria-label="Toggle filters">
+              <svg class="icon" aria-hidden="true"><use href="#i-filter" /></svg>
+            </button>
             <span class="count" id="card-count"></span>
           </div>
-          <div class="toolbar-actions">
-            <label class="search"
-              ><svg class="icon" aria-hidden="true"><use href="#i-search" /></svg
-              ><span class="sr-only">Search cards</span
-              ><input id="search" type="search" placeholder="Search cards…" autocomplete="off"
-            /></label>
-            <button id="add" class="btn primary" type="button">
-              <svg class="icon" aria-hidden="true"><use href="#i-plus" /></svg>New card
+          <div class="sheet-header-actions">
+            <button id="add" class="btn outline" type="button">
+              <svg class="icon" aria-hidden="true"><use href="#i-plus" /></svg><span>Add card</span>
             </button>
           </div>
         </div>
+
+        <form id="quick-add" class="quick-add" autocomplete="off">
+          <label class="sr-only" for="quick-input">Quick add a note or task</label>
+          <input
+            id="quick-input"
+            type="text"
+            maxlength="200"
+            placeholder="What’s on your mind today?"
+          />
+          <div class="quick-actions">
+            <button id="quick-expand" class="quick-btn soft" type="button" aria-label="Open full card editor" title="Open full editor">
+              <svg class="icon" aria-hidden="true"><use href="#i-plus" /></svg>
+            </button>
+            <button id="quick-submit" class="quick-btn send" type="submit" aria-label="Quick save card" title="Save card">
+              <svg class="icon" aria-hidden="true"><use href="#i-send" /></svg>
+            </button>
+          </div>
+        </form>
+
+        <div id="filter-bar" class="filter-bar">
+          <div class="filter-chips" role="group" aria-label="Filter cards">
+            <label class="filter-chip" id="chip-type-wrap">
+              <span class="chip-prefix">Type:</span>
+              <select id="filter-type" aria-label="Filter by type">
+                <option value="all">All</option>
+                <option value="note">Notes</option>
+                <option value="task">To-dos</option>
+              </select>
+            </label>
+            <label class="filter-chip" id="chip-time-wrap">
+              <span class="chip-prefix">Time:</span>
+              <select id="filter-time" aria-label="Filter by schedule">
+                <option value="all">All</option>
+                <option value="today">Today</option>
+                <option value="upcoming">Upcoming</option>
+                <option value="past">Past</option>
+                <option value="unscheduled">Unscheduled</option>
+              </select>
+            </label>
+            <label class="filter-chip" id="chip-status-wrap">
+              <span class="chip-prefix">Status:</span>
+              <select id="filter-status" aria-label="Filter by status">
+                <option value="all">All</option>
+                <option value="open">Open</option>
+                <option value="review">Review</option>
+                <option value="done">Done</option>
+              </select>
+            </label>
+            <button id="filter-clear" class="chip-reset" type="button" hidden>Reset</button>
+          </div>
+          <label class="search">
+            <svg class="icon" aria-hidden="true"><use href="#i-search" /></svg>
+            <span class="sr-only">Search cards</span>
+            <input id="search" type="search" placeholder="Search…" autocomplete="off" />
+          </label>
+        </div>
+
+        <h2 id="view-title" class="sr-only">Notes and tasks</h2>
         <div id="results" aria-labelledby="view-title"></div>
       </section>
     </main>
+
     <footer class="shell colophon">
-      <span
-        ><svg class="icon" aria-hidden="true"><use href="#i-tent" /></svg> Glamp</span
-      ><i>A field notebook</i>
+      <span><svg class="icon" aria-hidden="true"><use href="#i-tent" /></svg> Glamp</span>
+      <span class="colophon-note">Notes, plans &amp; to-dos</span>
     </footer>
+
     <dialog id="dialog" aria-labelledby="dialog-title">
       <div class="dialog-bar">
-        <span class="eyebrow"
-          ><svg class="icon" aria-hidden="true"><use href="#i-book" /></svg> Field notebook</span
-        ><button class="btn icon-only ghost" id="close" aria-label="Close card" type="button">
+        <span class="dialog-eyebrow">
+          <svg class="icon" aria-hidden="true"><use href="#i-book" /></svg>
+          <span>Card details</span>
+        </span>
+        <button class="btn icon-only ghost" id="close" aria-label="Close card" type="button">
           <svg class="icon" aria-hidden="true"><use href="#i-close" /></svg>
         </button>
       </div>
       <div id="detail"></div>
       <p id="dialog-message" role="status" class="dialog-message"></p>
     </dialog>
+
     <div id="notice" class="notice" role="status" aria-live="polite" aria-atomic="true"></div>
   </body>
 </html>

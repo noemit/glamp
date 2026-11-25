@@ -1,20 +1,13 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" role="img" aria-labelledby="title desc">
   <title id="title">Glamp</title>
-  <desc id="desc">A folded golden tent stands on a stack of field cards against a deep pine background.</desc>
-  <rect width="512" height="512" fill="#103632"/>
-  <!-- Two exposed card edges, below the face of the top card. -->
-  <g fill="none" stroke-linecap="round" stroke-linejoin="round" stroke-width="17">
-    <path stroke="#8cc7ad" d="m92 343 158 51q10 3 20 0l150-49"/>
-    <path stroke="#fff1cd" d="m88 310 162 52q10 3 20 0l154-50"/>
-  </g>
-  <path fill="#fff1cd" d="m84 269 159-50q9-3 18 0l165 51q13 4 0 9l-157 50q-9 3-18 0L84 278q-13-5 0-9Z"/>
-  <!-- A single folded card forms the roof; the two rules suggest the writing on its face. -->
-  <g stroke="#103632" stroke-width="9" stroke-linejoin="round">
-    <path fill="#ffb34d" d="m194 156 130-41q6-2 9 5l63 149-142 43Z"/>
-    <path fill="#ffda86" d="m112 270 82-114 60 156Z"/>
-  </g>
-  <path fill="#103632" d="m153 282 33-56q2-4 4 1l21 73Z"/>
-  <g stroke="#103632" stroke-width="10" stroke-linecap="round">
-    <path d="m239 187 69-22m-61 43 44-14"/>
-  </g>
+  <desc id="desc">Minimal rounded violet Glamp workspace emblem.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#8366ff"/>
+      <stop offset="100%" stop-color="#5e40eb"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="124" fill="url(#bg)"/>
+  <path fill="none" stroke="#ffffff" stroke-width="34" stroke-linecap="round" stroke-linejoin="round" d="m116 364 140-216 140 216H116Z"/>
+  <path fill="none" stroke="#dcd3ff" stroke-width="32" stroke-linecap="round" stroke-linejoin="round" d="M210 364 256 266l46 98"/>
 </svg>
