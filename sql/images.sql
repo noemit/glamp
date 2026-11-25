@@ -1,4 +1,5 @@
 -- Apply AFTER sql/schema.sql to the same Neon branch as the private storage bucket.
+BEGIN;
 CREATE TABLE IF NOT EXISTS glamp.card_images (
   id uuid PRIMARY KEY,
   card_id uuid NOT NULL REFERENCES glamp.cards (id) ON DELETE CASCADE,
@@ -9,3 +10,5 @@ CREATE TABLE IF NOT EXISTS glamp.card_images (
   created_at timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS card_images_card_created_idx ON glamp.card_images (card_id, created_at, id);
+REVOKE ALL ON glamp.card_images FROM PUBLIC;
+COMMIT;
