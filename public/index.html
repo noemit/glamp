@@ -3,9 +3,9 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="theme-color" content="#6c4ef6" />
+    <meta name="theme-color" content="#f2f2f2" />
     <meta name="description" content="Glamp is a private workspace for notes, plans, and to-dos." />
-    <title>Glamp · Notes &amp; Tasks</title>
+    <title>Glamp · Notes</title>
     <link rel="manifest" href="/manifest.webmanifest" />
     <link rel="icon" href="/icons/glamp.svg" type="image/svg+xml" />
     <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
@@ -27,29 +27,23 @@
         <path d="M14 3.5H7a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8.5Zm0 0V8.5h5M8.5 13h7m-7 3.5h4.5" />
       </symbol>
       <symbol id="i-book" viewBox="0 0 24 24">
-        <path d="M4 6.5A2.5 2.5 0 0 1 6.5 4H10l2 2h5.5A2.5 2.5 0 0 1 20 8.5v9a2.5 2.5 0 0 1-2.5 2.5h-11A2.5 2.5 0 0 1 4 17.5Z" />
+        <path d="M4 7a2 2 0 0 1 2-2h4.2l2 2H18a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2Z" />
       </symbol>
       <symbol id="i-board" viewBox="0 0 24 24">
         <rect x="3.5" y="4" width="7" height="16" rx="2" />
         <rect x="13.5" y="4" width="7" height="11" rx="2" />
       </symbol>
       <symbol id="i-task" viewBox="0 0 24 24">
-        <rect x="3.5" y="3.5" width="17" height="17" rx="4.5" />
+        <rect x="3.5" y="3.5" width="17" height="17" rx="4" />
         <path d="m8 12.2 2.7 2.8 5.6-6" />
       </symbol>
       <symbol id="i-calendar" viewBox="0 0 24 24">
-        <rect x="3.5" y="5" width="17" height="15.5" rx="3" />
+        <rect x="3.5" y="5" width="17" height="15.5" rx="2.5" />
         <path d="M8 3.2v3.6m8-3.6v3.6M3.5 10h17m-12 4h2m3.5 0h2" />
       </symbol>
       <symbol id="i-search" viewBox="0 0 24 24">
         <circle cx="10.5" cy="10.5" r="6.5" />
         <path d="m15.5 15.5 5 5" />
-      </symbol>
-      <symbol id="i-filter" viewBox="0 0 24 24">
-        <path d="M4 6h16l-6.2 7.2v5.3l-3.6 1.5v-6.8Z" />
-      </symbol>
-      <symbol id="i-send" viewBox="0 0 24 24">
-        <path d="M4.5 12h15m-6-6 6 6-6 6" />
       </symbol>
       <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14" /></symbol>
       <symbol id="i-arrow" viewBox="0 0 24 24"><path d="M5 12h14m-6-6 6 6-6 6" /></symbol>
@@ -127,9 +121,9 @@
               <svg class="icon" aria-hidden="true"><use href="#i-tent" /></svg>
             </span>
           </div>
-          <span class="pill-tag soft-violet">Owner access</span>
-          <h1 id="gate-title">Welcome back to Glamp</h1>
-          <p class="intro">Sign in with your workspace owner token to view your notes, plans, and to-dos.</p>
+          <span class="pill-tag">Owner access</span>
+          <h1 id="gate-title">Sign in to Glamp</h1>
+          <p class="intro">Enter your workspace owner token to view your notes, plans, and to-dos.</p>
           <form id="login-form">
             <label for="token">Owner token</label>
             <input
@@ -154,77 +148,59 @@
       <section id="workspace" class="workspace-sheet" hidden aria-labelledby="workspace-title">
         <div class="sheet-header">
           <div class="sheet-title-group">
-            <h1 id="workspace-title" tabindex="-1">Notes and tasks</h1>
-            <button id="filter-toggle" class="icon-chip" type="button" aria-expanded="true" aria-controls="filter-bar" aria-label="Toggle filters">
-              <svg class="icon" aria-hidden="true"><use href="#i-filter" /></svg>
-            </button>
+            <svg id="view-icon" class="icon title-icon" aria-hidden="true"><use href="#i-book" /></svg>
+            <h1 id="workspace-title" tabindex="-1">Notes</h1>
             <span class="count" id="card-count"></span>
           </div>
           <div class="sheet-header-actions">
             <button id="add" class="btn outline" type="button">
-              <svg class="icon" aria-hidden="true"><use href="#i-plus" /></svg><span>Add card</span>
+              <svg class="icon" aria-hidden="true"><use href="#i-plus" /></svg><span id="add-label">Add Notes</span>
             </button>
           </div>
         </div>
 
-        <form id="quick-add" class="quick-add" autocomplete="off">
-          <label class="sr-only" for="quick-input">Quick add a note or task</label>
-          <input
-            id="quick-input"
-            type="text"
-            maxlength="200"
-            placeholder="What’s on your mind today?"
-          />
-          <div class="quick-actions">
-            <button id="quick-expand" class="quick-btn soft" type="button" aria-label="Open full card editor" title="Open full editor">
-              <svg class="icon" aria-hidden="true"><use href="#i-plus" /></svg>
-            </button>
-            <button id="quick-submit" class="quick-btn send" type="submit" aria-label="Quick save card" title="Save card">
-              <svg class="icon" aria-hidden="true"><use href="#i-send" /></svg>
-            </button>
+        <div class="sheet-body">
+          <div id="filter-bar" class="filter-bar">
+            <div class="filter-chips" role="group" aria-label="Filter cards">
+              <label class="filter-chip" id="chip-type-wrap">
+                <span class="chip-prefix">Task:</span>
+                <select id="filter-type" aria-label="Filter by task or note">
+                  <option value="all">All</option>
+                  <option value="task">Tasks</option>
+                  <option value="note">Notes</option>
+                </select>
+              </label>
+              <label class="filter-chip" id="chip-time-wrap">
+                <span class="chip-prefix">Time:</span>
+                <select id="filter-time" aria-label="Filter by schedule">
+                  <option value="all">All</option>
+                  <option value="today">Today</option>
+                  <option value="upcoming">Upcoming</option>
+                  <option value="past">Past</option>
+                  <option value="unscheduled">Unscheduled</option>
+                </select>
+              </label>
+              <label class="filter-chip" id="chip-status-wrap">
+                <span class="chip-prefix">Status:</span>
+                <select id="filter-status" aria-label="Filter by status">
+                  <option value="all">All</option>
+                  <option value="open">Open</option>
+                  <option value="review">Review</option>
+                  <option value="done">Done</option>
+                </select>
+              </label>
+              <button id="filter-clear" class="chip-reset" type="button" hidden>Reset</button>
+            </div>
+            <label class="search">
+              <svg class="icon" aria-hidden="true"><use href="#i-search" /></svg>
+              <span class="sr-only">Search cards</span>
+              <input id="search" type="search" placeholder="Search…" autocomplete="off" />
+            </label>
           </div>
-        </form>
 
-        <div id="filter-bar" class="filter-bar">
-          <div class="filter-chips" role="group" aria-label="Filter cards">
-            <label class="filter-chip" id="chip-type-wrap">
-              <span class="chip-prefix">Type:</span>
-              <select id="filter-type" aria-label="Filter by type">
-                <option value="all">All</option>
-                <option value="note">Notes</option>
-                <option value="task">To-dos</option>
-              </select>
-            </label>
-            <label class="filter-chip" id="chip-time-wrap">
-              <span class="chip-prefix">Time:</span>
-              <select id="filter-time" aria-label="Filter by schedule">
-                <option value="all">All</option>
-                <option value="today">Today</option>
-                <option value="upcoming">Upcoming</option>
-                <option value="past">Past</option>
-                <option value="unscheduled">Unscheduled</option>
-              </select>
-            </label>
-            <label class="filter-chip" id="chip-status-wrap">
-              <span class="chip-prefix">Status:</span>
-              <select id="filter-status" aria-label="Filter by status">
-                <option value="all">All</option>
-                <option value="open">Open</option>
-                <option value="review">Review</option>
-                <option value="done">Done</option>
-              </select>
-            </label>
-            <button id="filter-clear" class="chip-reset" type="button" hidden>Reset</button>
-          </div>
-          <label class="search">
-            <svg class="icon" aria-hidden="true"><use href="#i-search" /></svg>
-            <span class="sr-only">Search cards</span>
-            <input id="search" type="search" placeholder="Search…" autocomplete="off" />
-          </label>
+          <h2 id="view-title" class="sr-only">Notes</h2>
+          <div id="results" aria-labelledby="view-title"></div>
         </div>
-
-        <h2 id="view-title" class="sr-only">Notes and tasks</h2>
-        <div id="results" aria-labelledby="view-title"></div>
       </section>
     </main>
 
@@ -237,7 +213,7 @@
       <div class="dialog-bar">
         <span class="dialog-eyebrow">
           <svg class="icon" aria-hidden="true"><use href="#i-book" /></svg>
-          <span>Card details</span>
+          <span>Note details</span>
         </span>
         <button class="btn icon-only ghost" id="close" aria-label="Close card" type="button">
           <svg class="icon" aria-hidden="true"><use href="#i-close" /></svg>

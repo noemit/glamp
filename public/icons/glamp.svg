@@ -1,13 +1,7 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" role="img" aria-labelledby="title desc">
   <title id="title">Glamp</title>
-  <desc id="desc">Minimal rounded violet Glamp workspace emblem.</desc>
-  <defs>
-    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0%" stop-color="#8366ff"/>
-      <stop offset="100%" stop-color="#5e40eb"/>
-    </linearGradient>
-  </defs>
-  <rect width="512" height="512" rx="124" fill="url(#bg)"/>
+  <desc id="desc">Minimal charcoal Glamp workspace emblem.</desc>
+  <rect width="512" height="512" rx="124" fill="#18181b"/>
   <path fill="none" stroke="#ffffff" stroke-width="34" stroke-linecap="round" stroke-linejoin="round" d="m116 364 140-216 140 216H116Z"/>
-  <path fill="none" stroke="#dcd3ff" stroke-width="32" stroke-linecap="round" stroke-linejoin="round" d="M210 364 256 266l46 98"/>
+  <path fill="none" stroke="#a1a1aa" stroke-width="32" stroke-linecap="round" stroke-linejoin="round" d="M210 364 256 266l46 98"/>
 </svg>

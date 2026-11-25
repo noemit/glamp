@@ -181,14 +181,40 @@ const dbSetupErrors = new Map([
   ['28P01', 'Neon rejected the database credentials. Check the Production database connection in Vercel.'],
   ['28000', 'Neon refused database access. Check the Production database connection in Vercel.'],
   ['3D000', 'Neon cannot find the database named in the connection string. Check the database selected for this deployment.'],
+  ['08001', 'Glamp could not connect to the Neon database. Check POSTGRES_URL and that the Neon branch is active.'],
+  ['08006', 'The connection to Neon closed unexpectedly. Retry or check the Neon branch status.'],
+  ['53300', 'Neon has too many active connections. Use the pooled POSTGRES_URL connection string.'],
+  ['57P01', 'The Neon compute restarted or suspended during the request. Please retry.'],
+  ['57P03', 'The Neon database is still starting up. Please retry in a moment.'],
+  ['XX000', 'Neon reported an endpoint or compute error. Check that the connected Neon project and branch are active.'],
 ]);
+function neonErrorDiagnostic(err) {
+  const mapped = dbSetupErrors.get(err.code);
+  if (mapped) return { tag: err.code, message: mapped };
+  if (err.sourceError) {
+    return { tag: 'transport', message: 'Glamp could not reach Neon. Check the database connection for this deployment and retry.' };
+  }
+  const msg = typeof err.message === 'string' ? err.message : '';
+  if (/not a valid URL|Wrong URL scheme|missing user, host or database/i.test(msg)) {
+    return { tag: 'invalid-url', message: 'The database connection string is invalid. Check POSTGRES_URL or DATABASE_URL in Vercel.' };
+  }
+  const httpStatus = msg.match(/Server error \(HTTP status (\d{3})\)/i)?.[1];
+  if (httpStatus) {
+    return {
+      tag: `http-${httpStatus}`,
+      message: `Neon rejected the SQL request (HTTP ${httpStatus}). Check that POSTGRES_URL points to an active Neon branch and valid credentials.`,
+    };
+  }
+  return {
+    tag: err.code || 'neon',
+    message: 'Glamp encountered a Neon database error. Check the Vercel database connection and that sql/schema.sql has been applied.',
+  };
+}
 cardsRouter.use((err, _req, res, next) => {
   if (err.name === 'NeonDbError') {
-    const message = dbSetupErrors.get(err.code);
-    if (message || err.sourceError) {
-      console.error('Glamp cards database error:', message ? err.code : 'transport');
-      return res.status(503).json({error: message || 'Glamp could not reach Neon. Check the database connection for this deployment and retry.'});
-    }
+    const diag = neonErrorDiagnostic(err);
+    console.error('Glamp cards database error:', diag.tag);
+    return res.status(503).json({ error: diag.message });
   }
   if (err instanceof CardError) return res.status(err.status).json({ error: err.message });
   if (err.type === 'entity.parse.failed') return res.status(400).json({ error: 'Invalid JSON.' });
