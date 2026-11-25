@@ -652,26 +652,230 @@ function render() {
   else results.append(docsView(cards));
 }
 
+const tableSepRe = /^\s*\|?(?:\s*:?-{3,}:?\s*\|)+\s*:?-{3,}:?\s*\|?\s*$/;
+const hrRe = /^\s*(?:---+|\*\*\*+|___+)\s*$/;
+const fenceRe = /^\s*(```|~~~)/;
+
 function parseBodyPreview(card) {
   const raw = card.body || '';
-  const lines = raw.split(/\r?\n/);
+  const lines = raw.replace(/\r\n?/g, '\n').split('\n');
   const checks = [];
-  const prose = [];
-  for (const line of lines) {
+  const blocks = [];
+  let rawBudget = 0;
+  let inFence = false;
+  let fenceMarker = '';
+  let inTable = false;
+  let codeBuf = [];
+  let paraBuf = [];
+  const titleNorm = (card.title || '').trim().toLowerCase();
+
+  const flushPara = () => {
+    if (!paraBuf.length) return;
+    if (rawBudget < 900) {
+      const text = paraBuf.join(' ').replace(/\s+/g, ' ').trim();
+      if (text) {
+        blocks.push({ kind: 'para', text });
+        rawBudget += text.length;
+      }
+    }
+    paraBuf = [];
+  };
+  const flushCode = () => {
+    if (!codeBuf.length) return;
+    if (rawBudget < 900) {
+      const text = codeBuf.join(' ').replace(/\s+/g, ' ').trim();
+      if (text) {
+        blocks.push({ kind: 'code', text });
+        rawBudget += text.length;
+      }
+    }
+    codeBuf = [];
+  };
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
     const trimmed = line.trim();
-    if (!trimmed) continue;
-    const match = /^[-*]\s+\[([ xX])\]\s+(.+)$/.exec(trimmed);
-    if (match) {
-      if (checks.length < 2) checks.push({ checked: match[1].toLowerCase() === 'x', text: match[2].trim() });
+
+    if (inFence) {
+      if (trimmed.startsWith(fenceMarker)) {
+        inFence = false;
+        fenceMarker = '';
+        flushCode();
+      } else if (trimmed && rawBudget < 900 && codeBuf.length < 4) {
+        codeBuf.push(trimmed);
+      }
+      continue;
+    }
+
+    const fMatch = fenceRe.exec(line);
+    if (fMatch) {
+      inTable = false;
+      flushPara();
+      inFence = true;
+      fenceMarker = fMatch[1];
+      continue;
+    }
+
+    if (!trimmed) {
+      inTable = false;
+      flushPara();
+      continue;
+    }
+
+    if (inTable) {
+      if (line.includes('|')) {
+        if (!tableSepRe.test(line) && rawBudget < 900) {
+          const cells = splitTableRow(line).filter(Boolean);
+          if (cells.length) {
+            const text = cells.length === 2 ? `${cells[0]} — ${cells[1]}` : cells.join(', ');
+            blocks.push({ kind: 'item', text });
+            rawBudget += text.length;
+          }
+        }
+        continue;
+      }
+      inTable = false;
+    }
+
+    if (hrRe.test(line) || tableSepRe.test(line)) {
+      flushPara();
+      continue;
+    }
+
+    if (line.includes('|') && i + 1 < lines.length && tableSepRe.test(lines[i + 1])) {
+      flushPara();
+      inTable = true;
+      if (rawBudget < 900) {
+        const cells = splitTableRow(line).filter(Boolean);
+        if (cells.length) {
+          const text = cells.length === 2 ? `${cells[0]} — ${cells[1]}` : cells.join(', ');
+          blocks.push({ kind: 'item', text });
+          rawBudget += text.length;
+        }
+      }
+      i++;
+      continue;
+    }
+
+    const unquoted = trimmed.replace(/^(?:>\s*)+/, '').trim();
+    if (!unquoted) {
+      flushPara();
+      continue;
+    }
+
+    const checkMatch = /^[-*+]\s+\[([ xX])\]\s+(.+)$/.exec(unquoted);
+    if (checkMatch) {
+      flushPara();
+      if (checks.length < 2) {
+        checks.push({ checked: checkMatch[1].toLowerCase() === 'x', text: checkMatch[2].trim() });
+      }
+      continue;
+    }
+
+    if (rawBudget >= 900) {
+      if (checks.length >= 2) break;
+      continue;
+    }
+
+    const hMatch = /^#{1,6}\s+(.+?)\s*#*$/.exec(unquoted);
+    if (hMatch) {
+      flushPara();
+      const text = hMatch[1].trim();
+      if (text && !(blocks.length === 0 && titleNorm && text.toLowerCase() === titleNorm)) {
+        blocks.push({ kind: 'heading', text });
+        rawBudget += text.length;
+      }
+      continue;
+    }
+
+    const listMatch = /^(?:[-*+]|\d+[.)])\s+(.+)$/.exec(unquoted);
+    if (listMatch) {
+      flushPara();
+      const text = listMatch[1].trim();
+      if (text) {
+        blocks.push({ kind: 'item', text });
+        rawBudget += text.length;
+      }
+      continue;
+    }
+
+    paraBuf.push(unquoted);
+  }
+  flushPara();
+  flushCode();
+
+  return { blocks, checks };
+}
+
+function trimPreviewNodes(el, maxChars = 240) {
+  let remaining = maxChars;
+  const walk = (parent) => {
+    for (let child = parent.firstChild; child; ) {
+      const next = child.nextSibling;
+      if (remaining <= 0) {
+        child.remove();
+        child = next;
+        continue;
+      }
+      if (child.nodeType === Node.TEXT_NODE) {
+        const text = child.nodeValue || '';
+        if (text.length > remaining) {
+          const cut = text.slice(0, remaining).replace(/\s+\S*$/, '') || text.slice(0, remaining);
+          child.nodeValue = `${cut.trimEnd()}…`;
+          remaining = 0;
+        } else {
+          remaining -= text.length;
+        }
+      } else if (child.nodeType === Node.ELEMENT_NODE) {
+        walk(child);
+        if (!child.textContent) child.remove();
+      }
+      child = next;
+    }
+  };
+  walk(el);
+  while (el.lastElementChild?.classList.contains('preview-sep') && el.lastChild === el.lastElementChild) {
+    el.lastElementChild.remove();
+  }
+}
+
+function renderBodyPreview(preview, target, fallback, { includeChecks = false, maxChars = 240 } = {}) {
+  let hasContent = false;
+  const appendSep = () => {
+    if (hasContent) target.append(node('span', 'preview-sep', ' · '));
+  };
+
+  for (const block of preview.blocks) {
+    const frag = document.createDocumentFragment();
+    if (block.kind === 'heading') {
+      const h = node('strong', 'preview-heading');
+      appendInline(block.text, h, { links: false });
+      frag.append(h);
+    } else if (block.kind === 'code') {
+      frag.append(node('code', '', block.text));
     } else {
-      prose.push(trimmed.replace(/^#+\s*/, ''));
+      appendInline(block.text, frag, { links: false });
+    }
+    if (!frag.textContent.trim()) continue;
+    appendSep();
+    target.append(frag);
+    hasContent = true;
+  }
+
+  if (!hasContent && includeChecks && preview.checks.length) {
+    for (const c of preview.checks) {
+      const frag = document.createDocumentFragment();
+      frag.append(c.checked ? '✓ ' : '☐ ');
+      appendInline(c.text, frag, { links: false });
+      if (!frag.textContent.trim()) continue;
+      appendSep();
+      target.append(frag);
+      hasContent = true;
     }
   }
-  const snippet = prose.join(' ').replace(/\s+/g, ' ').trim().slice(0, 220);
-  return {
-    snippet: snippet || (!checks.length ? (card.isTask ? 'To-do item' : 'Note') : ''),
-    checks,
-  };
+
+  if (hasContent) trimPreviewNodes(target, maxChars);
+  if (!target.textContent.trim() && fallback) target.textContent = fallback;
 }
 
 function toggleTaskCheckbox(card, check) {
@@ -719,14 +923,20 @@ function docsView(cards) {
     top.append(left, arrow);
     item.append(top);
 
-    const { snippet, checks } = parseBodyPreview(card);
-    if (snippet) item.append(node('p', 'card-snippet', snippet));
+    const preview = parseBodyPreview(card);
+    if (preview.blocks.length || !preview.checks.length) {
+      const snipEl = node('p', 'card-snippet');
+      renderBodyPreview(preview, snipEl, card.isTask ? 'To-do item' : 'Note');
+      item.append(snipEl);
+    }
 
-    if (checks.length) {
+    if (preview.checks.length) {
       const checkWrap = node('div', 'card-check-preview');
-      for (const c of checks) {
+      for (const c of preview.checks) {
         const row = node('div', `card-check-row${c.checked ? ' checked' : ''}`);
-        row.append(node('span', `mini-box${c.checked ? ' checked' : ''}`), node('span', '', c.text));
+        const label = node('span', 'card-check-text');
+        appendInline(c.text, label, { links: false });
+        row.append(node('span', `mini-box${c.checked ? ' checked' : ''}`), label);
         checkWrap.append(row);
       }
       item.append(checkWrap);
@@ -791,8 +1001,10 @@ function boardView(cards) {
       if (tp) top.append(tp);
       else if (!card.assignee) top.append(node('span', 'card-date', displayDate(new Date(card.createdAt))));
 
-      const { snippet } = parseBodyPreview(card);
-      item.append(top, cardLink(card), node('p', 'snippet', snippet || 'No notes yet.'));
+      const preview = parseBodyPreview(card);
+      const snipEl = node('p', 'snippet');
+      renderBodyPreview(preview, snipEl, 'No notes yet.', { includeChecks: true, maxChars: 160 });
+      item.append(top, cardLink(card), snipEl);
       lane.append(item);
     }
     lanes.append(lane);
@@ -913,13 +1125,17 @@ function todoView(cards) {
     const body = node('div', 'todo-row-body');
     const subCls =
       card.status === 'done' ? 'todo-sub is-done' : card.status === 'review' ? 'todo-sub is-review' : 'todo-sub';
-    const subText =
-      card.status === 'done'
-        ? '✓ Completed'
-        : card.status === 'review'
-          ? 'Ready for review'
-          : scheduleText(card) || parseBodyPreview(card).snippet;
-    body.append(cardLink(card), node('p', subCls, subText));
+    const subEl = node('p', subCls);
+    if (card.status === 'done') {
+      subEl.textContent = '✓ Completed';
+    } else if (card.status === 'review') {
+      subEl.textContent = 'Ready for review';
+    } else {
+      const sched = scheduleText(card);
+      if (sched) subEl.textContent = sched;
+      else renderBodyPreview(parseBodyPreview(card), subEl, 'To-do item', { includeChecks: true, maxChars: 140 });
+    }
+    body.append(cardLink(card), subEl);
 
     const badges = node('div', 'todo-row-badges');
     if (card.assignee) badges.append(node('span', 'pill assignee-tag', `@${card.assignee}`));
@@ -1162,68 +1378,112 @@ function safeExternalURL(value) {
     return null;
   }
 }
-function appendInline(text, parent) {
-  // Zero-innerHTML inline Markdown: `code`, **bold**, ~~strike~~, *italic*, [label](url), [[card]], and bare URLs.
+function appendInline(text, parent, opts = {}) {
+  // Zero-innerHTML inline Markdown: `code`, ***bold italic***, **bold**, __bold__, ~~strike~~, *italic*, _italic_, ![alt](url), [label](url), [[card]], <url>, and bare URLs.
+  const links = opts.links !== false;
+  const depth = opts.depth || 0;
+  if (depth > 6) {
+    parent.append(text);
+    return;
+  }
+  const childOpts = { links, depth: depth + 1 };
+  const noLinkOpts = { links: false, depth: depth + 1 };
   const tokenRe =
-    /`([^`\n]+)`|\*\*([^*\n]+?)\*\*|~~([^~\n]+?)~~|\*([^*\n]+?)\*|\[([^\[\]\n]{1,200})\]\(([^\s()]+)\)|\[\[(?:card:)?([a-zA-Z0-9_-]{1,128})(?:\|([^\[\]\n]{1,200}))?\]\]|https?:\/\/[^\s<>"'()[\]]+|(?<![\w/])\/\?card=[a-zA-Z0-9_-]+/g;
+    /\\([\\`*_{}[\]()#+\-.!~|])|`([^`\n]+)`|!\[([^\[\]\n]{0,200})\]\(((?:[^\s()]|\([^\s()]*\))+)\)|\[([^\[\]\n]{1,200})\]\(((?:[^\s()]|\([^\s()]*\))+)\)|\[\[(?:card:)?([a-zA-Z0-9_-]{1,128})(?:\|([^\[\]\n]{1,200}))?\]\]|<(https?:\/\/[^\s<>"']+)>|(https?:\/\/[^\s<>"'()[\]]+|(?<![\w/])\/\?card=[a-zA-Z0-9_-]+)|\*\*\*(?!\s)([^*\n]+?)(?<!\s)\*\*\*|(?<!\w)___(?!\s)([^_\n]+?)(?<!\s)___(?!\w)|\*\*(?!\s)((?:\*(?!\*)|[^*\n])+?)(?<!\s)\*\*|(?<!\w)__(?!\s)((?:_(?!_)|[^_\n])+?)(?<!\s)__(?!\w)|~~(?!\s)((?:~(?!~)|[^~\n])+?)(?<!\s)~~|\*(?!\s)([^*\n]+?)(?<!\s)\*|(?<!\w)_(?!\s)([^_\n]+?)(?<!\s)_(?!\w)/g;
   let last = 0;
   for (const m of text.matchAll(tokenRe)) {
     if (m.index > last) parent.append(text.slice(last, m.index));
     const raw = m[0];
     if (m[1] !== undefined) {
-      parent.append(node('code', '', m[1]));
+      parent.append(m[1]);
     } else if (m[2] !== undefined) {
-      const strong = node('strong');
-      appendInline(m[2], strong);
-      parent.append(strong);
-    } else if (m[3] !== undefined) {
-      const del = node('del');
-      appendInline(m[3], del);
-      parent.append(del);
-    } else if (m[4] !== undefined) {
-      const em = node('em');
-      appendInline(m[4], em);
-      parent.append(em);
+      parent.append(node('code', '', m[2]));
+    } else if (m[3] !== undefined && m[4] !== undefined) {
+      if (m[3].trim()) parent.append(m[3].trim());
     } else if (m[5] !== undefined && m[6] !== undefined) {
-      const cid = linkTarget(m[6]);
-      if (cid) {
-        parent.append(cardLink({ id: cid }, '', m[5]));
+      if (!links) {
+        const span = node('span', 'preview-link');
+        appendInline(m[5], span, noLinkOpts);
+        parent.append(span);
       } else {
-        const ext = safeExternalURL(m[6]);
-        if (ext) {
-          const a = node('a', '', m[5]);
-          a.href = ext;
-          a.target = '_blank';
-          a.rel = 'noopener noreferrer';
+        const cid = linkTarget(m[6]);
+        if (cid) {
+          const a = cardLink({ id: cid }, '', '');
+          appendInline(m[5], a, noLinkOpts);
           parent.append(a);
         } else {
-          parent.append(raw);
+          const ext = safeExternalURL(m[6]);
+          if (ext) {
+            const a = node('a');
+            a.href = ext;
+            a.target = '_blank';
+            a.rel = 'noopener noreferrer';
+            appendInline(m[5], a, noLinkOpts);
+            parent.append(a);
+          } else {
+            appendInline(m[5], parent, noLinkOpts);
+          }
         }
       }
     } else if (m[7] !== undefined) {
       const cid = m[7];
       const label = m[8] || state.cards.find((c) => c.id === cid)?.title || cid;
-      parent.append(cardLink({ id: cid }, '', label));
-    } else {
-      const trimmed = raw.replace(/[.,;!]+$/, '');
-      const trail = raw.slice(trimmed.length);
-      const cid = linkTarget(trimmed);
-      if (cid) {
-        parent.append(cardLink({ id: cid }, '', trimmed));
-        if (trail) parent.append(trail);
+      parent.append(links ? cardLink({ id: cid }, '', label) : node('span', 'preview-link', label));
+    } else if (m[9] !== undefined) {
+      const ext = safeExternalURL(m[9]);
+      if (links && ext) {
+        const a = node('a', '', m[9]);
+        a.href = ext;
+        a.target = '_blank';
+        a.rel = 'noopener noreferrer';
+        parent.append(a);
       } else {
-        const ext = safeExternalURL(trimmed);
-        if (ext) {
-          const a = node('a', '', trimmed);
-          a.href = ext;
-          a.target = '_blank';
-          a.rel = 'noopener noreferrer';
-          parent.append(a);
+        parent.append(links ? raw : node('span', 'preview-link', m[9]));
+      }
+    } else if (m[10] !== undefined) {
+      if (!links) {
+        parent.append(raw);
+      } else {
+        const trimmed = raw.replace(/[.,;!]+$/, '');
+        const trail = raw.slice(trimmed.length);
+        const cid = linkTarget(trimmed);
+        if (cid) {
+          parent.append(cardLink({ id: cid }, '', trimmed));
           if (trail) parent.append(trail);
         } else {
-          parent.append(raw);
+          const ext = safeExternalURL(trimmed);
+          if (ext) {
+            const a = node('a', '', trimmed);
+            a.href = ext;
+            a.target = '_blank';
+            a.rel = 'noopener noreferrer';
+            parent.append(a);
+            if (trail) parent.append(trail);
+          } else {
+            parent.append(raw);
+          }
         }
       }
+    } else if (m[11] !== undefined || m[12] !== undefined) {
+      const strong = node('strong');
+      const em = node('em');
+      appendInline(m[11] ?? m[12], em, childOpts);
+      strong.append(em);
+      parent.append(strong);
+    } else if (m[13] !== undefined || m[14] !== undefined) {
+      const strong = node('strong');
+      appendInline(m[13] ?? m[14], strong, childOpts);
+      parent.append(strong);
+    } else if (m[15] !== undefined) {
+      const del = node('del');
+      appendInline(m[15], del, childOpts);
+      parent.append(del);
+    } else if (m[16] !== undefined || m[17] !== undefined) {
+      const em = node('em');
+      appendInline(m[16] ?? m[17], em, childOpts);
+      parent.append(em);
+    } else {
+      parent.append(raw);
     }
     last = m.index + raw.length;
   }
@@ -1245,13 +1505,14 @@ function renderBody(text) {
   }
   const lines = text.replace(/\r\n?/g, '\n').split('\n');
   let i = 0;
-  const isSpecial = (line) =>
-    /^```/.test(line) ||
-    /^#{1,4}\s+/.test(line) ||
+  const isSpecial = (line, idx) =>
+    fenceRe.test(line) ||
+    /^#{1,6}\s+/.test(line) ||
     /^>\s?/.test(line) ||
-    /^(?:---+|\*\*\*+|___+)\s*$/.test(line) ||
+    hrRe.test(line) ||
     /^\s*[-*+]\s+/.test(line) ||
-    /^\s*\d+\.\s+/.test(line);
+    /^\s*\d+\.\s+/.test(line) ||
+    (line.includes('|') && idx + 1 < lines.length && tableSepRe.test(lines[idx + 1]));
 
   while (i < lines.length) {
     const line = lines[i];
@@ -1260,10 +1521,12 @@ function renderBody(text) {
       continue;
     }
     // Fenced code block
-    if (/^```/.test(line)) {
+    const fMatch = fenceRe.exec(line);
+    if (fMatch) {
+      const marker = fMatch[1];
       i++;
       const codeLines = [];
-      while (i < lines.length && !/^```/.test(lines[i])) {
+      while (i < lines.length && !lines[i].trim().startsWith(marker)) {
         codeLines.push(lines[i]);
         i++;
       }
@@ -1275,13 +1538,13 @@ function renderBody(text) {
       continue;
     }
     // Horizontal rule
-    if (/^(?:---+|\*\*\*+|___+)\s*$/.test(line)) {
+    if (hrRe.test(line)) {
       container.append(node('hr'));
       i++;
       continue;
     }
-    // Heading (# -> h2 .. #### -> h5)
-    const hMatch = /^(#{1,4})\s+(.+)$/.exec(line);
+    // Heading (# -> h2 .. ###### -> h5)
+    const hMatch = /^(#{1,6})\s+(.+?)\s*#*$/.exec(line);
     if (hMatch) {
       const h = node(`h${Math.min(5, hMatch[1].length + 1)}`);
       appendInline(hMatch[2].trim(), h);
@@ -1290,11 +1553,7 @@ function renderBody(text) {
       continue;
     }
     // Table (header | sep | rows)
-    if (
-      line.includes('|') &&
-      i + 1 < lines.length &&
-      /^\s*\|?(?:\s*:?-{3,}:?\s*\|)+\s*:?-{3,}:?\s*\|?\s*$/.test(lines[i + 1])
-    ) {
+    if (line.includes('|') && i + 1 < lines.length && tableSepRe.test(lines[i + 1])) {
       const wrap = node('div', 'md-table-wrap'),
         table = node('table'),
         thead = node('thead'),
@@ -1376,7 +1635,7 @@ function renderBody(text) {
     // Paragraph
     const p = node('p');
     let firstLine = true;
-    while (i < lines.length && lines[i].trim() && !isSpecial(lines[i])) {
+    while (i < lines.length && lines[i].trim() && !isSpecial(lines[i], i)) {
       if (!firstLine) p.append(document.createElement('br'));
       appendInline(lines[i], p);
       firstLine = false;
@@ -1534,7 +1793,9 @@ function commentSection(card, version) {
         if (profile?.role) top.append(node('span', 'comment-role', profile.role));
         const stamp = new Date(c.createdAt);
         top.append(node('span', 'comment-time', Number.isFinite(stamp.valueOf()) ? dateTimeFormat.format(stamp) : ''));
-        item.append(top, node('p', 'comment-body', c.body));
+        const bodyEl = renderBody(c.body);
+        bodyEl.classList.add('comment-body');
+        item.append(top, bodyEl);
         list.append(item);
       }
     } catch (error) {
@@ -1989,6 +2250,64 @@ function showNewProject() {
     }
   });
 }
+function editorImagesSection(card, version) {
+  const wrap = node('div', 'field editor-images');
+  wrap.hidden = true;
+  const label = node('span', 'field-label', 'Images');
+  const grid = node('div', 'editor-images-grid');
+  wrap.append(label, grid);
+
+  const load = async () => {
+    try {
+      const { images } = await request(`${cardAPI(card.id)}/images`);
+      if (version !== sheetVersion) return;
+      grid.replaceChildren();
+      if (!images.length) {
+        wrap.hidden = true;
+        return;
+      }
+      wrap.hidden = false;
+      for (const item of images) {
+        const url = safeImageURL(item.url);
+        if (!url) continue;
+        const tile = node('div', 'editor-image-item');
+        const img = node('img');
+        img.loading = 'lazy';
+        img.src = url;
+        img.alt = item.caption || item.name || 'Card image';
+        const caption = node('span', 'editor-image-meta', item.caption || item.name || 'Image');
+        caption.title = item.caption || item.name || '';
+        const delBtn = button('Delete', async () => {
+          delBtn.disabled = true;
+          delBtn.textContent = 'Deleting…';
+          try {
+            await request(`${cardAPI(card.id)}/images/${encodeURIComponent(item.id)}`, { method: 'DELETE' });
+            if (version === sheetVersion) {
+              tile.remove();
+              if (!grid.hasChildNodes()) wrap.hidden = true;
+              sheetMessage('Image deleted.');
+            }
+          } catch (error) {
+            if (error !== stale && version === sheetVersion) {
+              delBtn.disabled = false;
+              delBtn.textContent = 'Delete';
+              sheetMessage(message(error));
+            }
+          }
+        }, 'btn sm danger');
+        delBtn.setAttribute('aria-label', `Delete ${item.caption || item.name || 'image'}`);
+        const row = node('div', 'editor-image-bar');
+        row.append(caption, delBtn);
+        tile.append(img, row);
+        grid.append(tile);
+      }
+    } catch {
+      // Leave section hidden if image storage is not configured.
+    }
+  };
+  load();
+  return wrap;
+}
 function showEditor(card) {
   const version = ++sheetVersion;
   docSheet(card ? 'Edit card' : 'New card');
@@ -2066,7 +2385,9 @@ function showEditor(card) {
   dates.append(field('Start date (optional)', starting), field('End date (optional)', ending));
   const routing = node('div', 'two-col');
   routing.append(field('Project (optional)', project), field('Assigned to (optional)', assignee));
-  fields.append(field('Title', title), bodyField, options, dates, routing, field('Author (optional)', author), datalist, agentList);
+  fields.append(field('Title', title), bodyField);
+  if (card) fields.append(editorImagesSection(card, version));
+  fields.append(options, dates, routing, field('Author (optional)', author), datalist, agentList);
   const buttons = node('div', 'form-bottom'),
     save = node('button', 'btn primary', 'Save card');
   save.type = 'submit';

@@ -89,6 +89,9 @@ Every new comment bumps the card's `updatedAt` timestamp, so `updatedSince` catc
    Content-Type: application/json
    Body: { "caption": "Updated figure caption" }
 
+   DELETE /api/cards/<CARD_UUID>/images/<IMAGE_UUID>
+   -> 204 No Content
+
 ## Conventions
 - Set status to "review" deliberately when work needs the owner's attention (entering "review" triggers Web Push if enabled).
 - Use comments (`POST /api/cards/<CARD_UUID>/comments`) for updates and handoffs instead of overwriting earlier card notes.

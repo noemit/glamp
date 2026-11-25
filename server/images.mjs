@@ -87,6 +87,11 @@ function localStore(root, cardId) {
       await rename(tmp, path.join(dir, id, 'metadata.json'));
       return updated;
     },
+    async remove(id) {
+      try { await metadata(id); } catch (e) { if (e.code === 'ENOENT') return false; throw e; }
+      await rm(path.join(dir, id), { recursive: true, force: true });
+      return true;
+    },
   };
 }
 
@@ -158,6 +163,12 @@ function storeFor(cardId) {
                                 RETURNING id, name, caption, content_type, size, created_at`;
         return row || null;
       },
+      async remove(id) {
+        const [row] = await sql`DELETE FROM glamp.card_images
+                                WHERE card_id = ${cardId} AND id = ${id}
+                                RETURNING id`;
+        return Boolean(row);
+      },
     };
   }
   if (![Bucket, endpoint, region, accessKeyId, secretAccessKey].every(Boolean) || !/^https:\/\//i.test(endpoint)) {
@@ -198,6 +209,14 @@ function storeFor(cardId) {
                               WHERE card_id = ${cardId} AND id = ${id}
                               RETURNING id, name, caption, content_type, size, created_at`;
       return row || null;
+    },
+    async remove(id) {
+      const [row] = await sql`DELETE FROM glamp.card_images
+                              WHERE card_id = ${cardId} AND id = ${id}
+                              RETURNING object_key`;
+      if (!row) return false;
+      await s3.send(new DeleteObjectCommand({ Bucket, Key: row.object_key }));
+      return true;
     },
   };
 }
@@ -249,6 +268,14 @@ imagesRouter.patch('/:id/images/:imageId', express.json({ limit: '16kb' }), asyn
   const row = await res.locals.imageStore.setCaption(imageId, cap.value);
   if (!row) return res.status(404).json({ error: 'Image not found.' });
   res.json({ image: publicImage(req.params.id, row) });
+});
+
+imagesRouter.delete('/:id/images/:imageId', async (req, res) => {
+  const { imageId } = req.params;
+  if (!IMAGE_ID.test(imageId)) return res.status(404).json({ error: 'Image not found.' });
+  const deleted = await res.locals.imageStore.remove(imageId);
+  if (!deleted) return res.status(404).json({ error: 'Image not found.' });
+  res.status(204).end();
 });
 
 imagesRouter.get('/:id/images/:imageId', async (req, res) => {

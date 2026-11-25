@@ -1068,6 +1068,57 @@ textarea {
   overflow: hidden;
 }
 
+.card-snippet strong,
+.lane-card .snippet strong,
+.todo-sub strong,
+.card-check-row strong {
+  font-weight: 600;
+  color: var(--ink-secondary);
+}
+
+.card-snippet em,
+.lane-card .snippet em,
+.todo-sub em,
+.card-check-row em {
+  font-style: italic;
+}
+
+.card-snippet del,
+.lane-card .snippet del,
+.todo-sub del,
+.card-check-row del {
+  text-decoration: line-through;
+  opacity: 0.75;
+}
+
+.card-snippet code,
+.lane-card .snippet code,
+.todo-sub code,
+.card-check-row code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.86em;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 0.5px 4px;
+  color: var(--ink-secondary);
+}
+
+.lane-card .snippet code,
+.todo-sub code {
+  background: var(--card-bg);
+}
+
+.preview-sep {
+  opacity: 0.5;
+}
+
+.preview-link {
+  text-decoration: underline;
+  text-decoration-color: rgba(107, 114, 128, 0.45);
+  text-underline-offset: 2px;
+}
+
 .card-check-preview {
   display: flex;
   flex-direction: column;
@@ -1081,6 +1132,14 @@ textarea {
   gap: 8px;
   font-size: 13.5px;
   color: var(--ink-secondary);
+  min-width: 0;
+}
+
+.card-check-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .card-check-row.checked {
@@ -1237,12 +1296,24 @@ textarea {
   font-variant-numeric: tabular-nums;
 }
 
-.comment-body {
+.md-body.comment-body {
+  padding: 0;
   font-size: 13.8px;
   line-height: 1.55;
   color: var(--ink-secondary);
-  white-space: pre-wrap;
   overflow-wrap: anywhere;
+}
+
+.md-body.comment-body p,
+.md-body.comment-body ul,
+.md-body.comment-body ol,
+.md-body.comment-body blockquote,
+.md-body.comment-body pre {
+  margin: 0.45em 0;
+}
+
+.md-body.comment-body code {
+  background: var(--surface);
 }
 
 .comment-form {
@@ -2367,6 +2438,49 @@ dialog::backdrop {
 
 .md-body tr:last-child td {
   border-bottom: 0;
+}
+
+.editor-images-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 12px;
+}
+
+.editor-image-item {
+  background: var(--card-bg);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.editor-image-item img {
+  width: 100%;
+  height: 116px;
+  object-fit: contain;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  display: block;
+}
+
+.editor-image-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+}
+
+.editor-image-meta {
+  font-size: 12.5px;
+  color: var(--ink-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
 }
 
 .fields {

@@ -164,6 +164,17 @@ test('private card image API', async t => {
         }
         return Response.json({ command: 'UPDATE', rowCount: 0, rows: [], fields: [] });
       }
+      if (query.includes('DELETE FROM glamp.card_images')) {
+        const hit = stored.get(params[1]);
+        if (hit && hit.card_id === params[0]) {
+          stored.delete(params[1]);
+          return Response.json({
+            command: 'DELETE', rowCount: 1, rows: [[hit.id]],
+            fields: [{ name: 'id', dataTypeID: 2950 }],
+          });
+        }
+        return Response.json({ command: 'DELETE', rowCount: 0, rows: [], fields: [] });
+      }
       if (query.includes('SELECT content_type, size, data FROM glamp.card_images')) {
         const hit = stored.get(params[1]);
         const rows = hit && hit.card_id === params[0] ? [[hit.content_type, String(hit.size), hit.data]] : [];
@@ -200,11 +211,28 @@ test('private card image API', async t => {
       const dl = await get(image.url);
       assert.equal(dl.status, 200);
       assert.deepEqual(Buffer.from(await dl.arrayBuffer()), png);
+      // Delete image from Neon blob store
+      const del = await fetch(origin + image.url, { method: 'DELETE', headers: auth });
+      assert.equal(del.status, 204);
+      assert.equal((await fetch(origin + image.url, { method: 'DELETE', headers: auth })).status, 404);
+      assert.deepEqual(await (await get(`/api/cards/${existingCardId}/images`)).json(), { images: [] });
       // Reject over-length captions (> 500 chars)
       assert.equal((await post(`/api/cards/${existingCardId}/images`, png, 'image/png', 'too-long.png', 'a'.repeat(501))).status, 400);
     } finally {
       neonConfig.fetchFunction = savedFetch;
       for (const k of cloudKeys) delete process.env[k];
     }
+  });
+
+  await t.test('deletes images from local store scoped to card and requires auth', async () => {
+    const upload = await post(b, png, 'image/png', 'remove-me.png');
+    assert.equal(upload.status, 201);
+    const { image } = await upload.json();
+    assert.equal((await fetch(origin + image.url, { method: 'DELETE' })).status, 401);
+    assert.equal((await fetch(origin + a + '/' + image.id, { method: 'DELETE', headers: auth })).status, 404);
+    assert.equal((await fetch(origin + b + '/not-a-uuid', { method: 'DELETE', headers: auth })).status, 404);
+    assert.equal((await fetch(origin + image.url, { method: 'DELETE', headers: auth })).status, 204);
+    assert.equal((await get(image.url)).status, 404);
+    assert.equal((await fetch(origin + image.url, { method: 'DELETE', headers: auth })).status, 404);
   });
 });
