@@ -1,3 +1,4 @@
+import { databaseUrl } from './database-url.mjs';
 import express from 'express';
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
@@ -70,7 +71,8 @@ function localStore(root, cardId) {
 let cloud;
 function storeFor(cardId) {
   const env = process.env;
-  const { NODE_ENV, VERCEL, GLAMP_DATA_DIR, DATABASE_URL, NEON_STORAGE_BUCKET: Bucket } = env;
+  const { NODE_ENV, VERCEL, GLAMP_DATA_DIR, NEON_STORAGE_BUCKET: Bucket } = env;
+  const url = databaseUrl(env);
   // The GLAMP names override the AWS-standard names emitted by `neon env pull`,
   // so Vercel's own runtime region/credentials can remain untouched.
   const endpoint = env.GLAMP_S3_ENDPOINT ?? env.AWS_ENDPOINT_URL_S3;
@@ -78,13 +80,13 @@ function storeFor(cardId) {
   const accessKeyId = env.GLAMP_S3_ACCESS_KEY_ID ?? env.AWS_ACCESS_KEY_ID;
   const secretAccessKey = env.GLAMP_S3_SECRET_ACCESS_KEY ?? env.AWS_SECRET_ACCESS_KEY;
   const storageConfigured = Bucket || endpoint || env.GLAMP_S3_REGION || env.GLAMP_S3_ACCESS_KEY_ID || env.GLAMP_S3_SECRET_ACCESS_KEY;
-  if (NODE_ENV !== 'production' && !VERCEL && !DATABASE_URL && !storageConfigured) {
+  if (NODE_ENV !== 'production' && !VERCEL && !url && !storageConfigured) {
     return localStore(GLAMP_DATA_DIR || '.glamp', cardId);
   }
-  if (![DATABASE_URL, Bucket, endpoint, region, accessKeyId, secretAccessKey].every(Boolean) || !/^https:\/\//i.test(endpoint)) {
+  if (![url, Bucket, endpoint, region, accessKeyId, secretAccessKey].every(Boolean) || !/^https:\/\//i.test(endpoint)) {
     throw Object.assign(new Error('Image storage not configured'), { status: 503 });
   }
-  cloud ??= { sql: neon(DATABASE_URL), s3: new S3Client({ endpoint, region, forcePathStyle: true,
+  cloud ??= { sql: neon(url), s3: new S3Client({ endpoint, region, forcePathStyle: true,
     credentials: { accessKeyId, secretAccessKey }, requestChecksumCalculation: 'WHEN_REQUIRED' }) };
   const { sql, s3 } = cloud;
   return {

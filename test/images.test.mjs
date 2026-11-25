@@ -1,3 +1,4 @@
+import { databaseUrlKeys } from '../server/database-url.mjs';
 import assert from 'node:assert/strict';
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdtemp, readdir, rm } from 'node:fs/promises';
@@ -12,7 +13,7 @@ const webp = Buffer.from('UklGRiQAAABXRUJQVlA4IBgAAAAwAQCdASoBAAEAAgA0JaQAA3AA/v
 
 test('private card image API', async t => {
   // Explicitly isolate the assembled app from cloud creds and real dev state.
-  const cloudKeys = ['DATABASE_URL', 'VERCEL', 'NEON_STORAGE_BUCKET', 'GLAMP_S3_ENDPOINT', 'GLAMP_S3_REGION',
+  const cloudKeys = [...databaseUrlKeys, 'VERCEL', 'NEON_STORAGE_BUCKET', 'GLAMP_S3_ENDPOINT', 'GLAMP_S3_REGION',
     'GLAMP_S3_ACCESS_KEY_ID', 'GLAMP_S3_SECRET_ACCESS_KEY', 'AWS_ENDPOINT_URL_S3', 'AWS_REGION', 'AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY'];
   for (const k of cloudKeys) delete process.env[k];
   const root = await mkdtemp(join(tmpdir(), 'glamp-images-'));
@@ -105,7 +106,7 @@ test('private card image API', async t => {
 
   await t.test('prefixed deployment settings work without overriding runtime AWS variables', async () => {
     Object.assign(process.env, {
-      DATABASE_URL: 'postgres://test:test@database.invalid/test', NEON_STORAGE_BUCKET: 'private',
+      POSTGRES_URL: 'postgres://test:test@database.invalid/test', NEON_STORAGE_BUCKET: 'private',
       GLAMP_S3_REGION: 'us-east-2', GLAMP_S3_ENDPOINT: 'https://storage.invalid',
       GLAMP_S3_ACCESS_KEY_ID: 'fake-id', GLAMP_S3_SECRET_ACCESS_KEY: 'fake-secret',
       AWS_ENDPOINT_URL_S3: 'http://unrelated.invalid',

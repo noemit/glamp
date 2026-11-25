@@ -1,3 +1,4 @@
+import { databaseUrl } from './database-url.mjs';
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, readdir, readFile, realpath, rename, rm, writeFile } from 'node:fs/promises';
 import { join, resolve, sep } from 'node:path';
@@ -8,8 +9,9 @@ const idFor = endpoint => createHash('sha256').update(endpoint).digest('hex');
 const publicDir = fileURLToPath(new URL('../public', import.meta.url));
 
 export async function subscriptionStore() {
-  if (process.env.DATABASE_URL) {
-    const sql = neon(process.env.DATABASE_URL);
+  const url = databaseUrl();
+  if (url) {
+    const sql = neon(url);
     return {
       async put(sub) {
         await sql`INSERT INTO glamp.push_subscriptions (id, subscription)

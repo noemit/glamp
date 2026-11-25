@@ -8,7 +8,7 @@ class PushError extends Error {
 }
 const invalid = () => new PushError(400, 'Invalid browser subscription or unsupported push service.');
 const storageError = () => new PushError(503,
-  'Private push storage unavailable. Check DATABASE_URL and apply sql/push.sql as the database owner; for local development use a private, writable GLAMP_DATA_DIR.');
+  'Private push storage unavailable. Check POSTGRES_URL or DATABASE_URL and apply sql/push.sql as the database owner; for local development use a private, writable GLAMP_DATA_DIR.');
 
 function vapidDetails() {
   const { VAPID_SUBJECT: subject, VAPID_PUBLIC_KEY: publicKey, VAPID_PRIVATE_KEY: privateKey } = process.env;

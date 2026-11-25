@@ -1,3 +1,4 @@
+import { databaseUrlKeys } from '../server/database-url.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createECDH, randomBytes, randomUUID } from 'node:crypto';
@@ -24,7 +25,7 @@ test('private push configuration, persistence and delivery', async t => {
   const dir = await mkdtemp(join(tmpdir(), 'glamp-push-'));
   const local = join(dir, 'push_subscriptions');
   const env = { ...process.env };
-  const changed = ['GLAMP_DATA_DIR', 'NODE_ENV', 'VERCEL', 'DATABASE_URL', 'VAPID_PUBLIC_KEY', 'VAPID_PRIVATE_KEY', 'VAPID_SUBJECT'];
+  const changed = ['GLAMP_DATA_DIR', 'NODE_ENV', 'VERCEL', ...databaseUrlKeys, 'VAPID_PUBLIC_KEY', 'VAPID_PRIVATE_KEY', 'VAPID_SUBJECT'];
   t.after(async () => {
     for (const key of changed) {
       if (env[key] === undefined) delete process.env[key]; else process.env[key] = env[key];

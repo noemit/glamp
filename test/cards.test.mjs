@@ -1,3 +1,4 @@
+import { databaseUrlKeys } from '../server/database-url.mjs';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
@@ -13,7 +14,7 @@ import express from 'express';
 describe('cards HTTP contract', { concurrency: false }, () => {
   const uuid = /^[\da-f]{8}(?:-[\da-f]{4}){3}-[\da-f]{12}$/i;
   const app = express();
-  const envKeys = ['GLAMP_DATA_DIR', 'NODE_ENV', 'VERCEL', 'DATABASE_URL'];
+  const envKeys = ['GLAMP_DATA_DIR', 'NODE_ENV', 'VERCEL', ...databaseUrlKeys];
   const savedEnv = new Map(envKeys.map(key => [key, process.env[key]]));
   let dir, server, base, cardExists;
 
@@ -22,7 +23,7 @@ describe('cards HTTP contract', { concurrency: false }, () => {
     process.env.GLAMP_DATA_DIR = dir;
     process.env.NODE_ENV = 'test';
     delete process.env.VERCEL;
-    delete process.env.DATABASE_URL;
+    for (const key of databaseUrlKeys) delete process.env[key];
     const cards = await import('../server/cards.mjs');
     await cards.initStore();
     cardExists = cards.cardExists;
@@ -187,7 +188,7 @@ describe('cards HTTP contract', { concurrency: false }, () => {
     assert.equal(result.trim(), 'true');
   });
 
-  it('refuses SQLite on deployed workspaces without a DATABASE_URL', async () => {
+  it('refuses SQLite on deployed workspaces without a database connection string', async () => {
     const url = new URL('../server/cards.mjs', import.meta.url).href;
     for (const env of [{ NODE_ENV: 'production' }, { NODE_ENV: 'development', VERCEL: '1' }]) {
       execFileSync(process.execPath, ['--input-type=module', '-e', `
@@ -198,7 +199,7 @@ describe('cards HTTP contract', { concurrency: false }, () => {
     }
   });
 
-  it('does not switch to the local store on a Neon outage', async () => {
+  it('uses Vercel POSTGRES_URL and does not switch to the local store on a Neon outage', async () => {
     const local = await create({ title: 'Do not fall back to this database' });
     const url = new URL('../server/cards.mjs', import.meta.url).href;
     const neon = import.meta.resolve('@neondatabase/serverless');
@@ -210,7 +211,7 @@ describe('cards HTTP contract', { concurrency: false }, () => {
       neonConfig.fetchFunction = () => { attempts++; throw new Error('Simulated offline'); };
       await assert.rejects(cardExists(process.argv[1]));
       assert.ok(attempts > 0);
-    `, local.id], { env: { ...process.env, DATABASE_URL: 'postgresql://fake:fake@db.invalid/workspace' },
+    `, local.id], { env: { ...process.env, POSTGRES_URL: 'postgresql://fake:fake@db.invalid/workspace' },
       timeout: 10000, stdio: 'pipe' });
   });
 

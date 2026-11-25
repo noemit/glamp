@@ -1,3 +1,4 @@
+import { databaseUrl } from './database-url.mjs';
 import { randomUUID } from 'node:crypto';
 import { mkdir, open } from 'node:fs/promises';
 import path from 'node:path';
@@ -49,9 +50,10 @@ function checkRange({ startingDate, endingDate }) {
 // Neon uses its HTTP driver (no long-lived client); migrations are explicit.
 // SQLite is strictly for dev/test. Never switch stores on a connection failure.
 async function openStore() {
-  if (process.env.DATABASE_URL) {
+  const url = databaseUrl();
+  if (url) {
     const { neon } = await import('@neondatabase/serverless');
-    const sql = neon(process.env.DATABASE_URL);
+    const sql = neon(url);
     return {
       query: (statement, params) => sql.query(statement, params),
       dates: "to_char(starting_date, 'YYYY-MM-DD') AS starting_date, to_char(ending_date, 'YYYY-MM-DD') AS ending_date",
@@ -59,7 +61,7 @@ async function openStore() {
     };
   }
   if (process.env.NODE_ENV === 'production' || process.env.VERCEL) {
-    throw new CardError(503, 'DATABASE_URL is required for a deployed workspace.');
+    throw new CardError(503, 'A Neon connection string (POSTGRES_URL or DATABASE_URL) is required for a deployed workspace.');
   }
   const { DatabaseSync } = await import('node:sqlite');
   const dir = path.resolve(process.env.GLAMP_DATA_DIR || '.glamp');

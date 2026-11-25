@@ -1,3 +1,4 @@
+import { databaseUrlKeys } from '../server/database-url.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash, randomBytes } from 'node:crypto';
@@ -7,7 +8,7 @@ import { join } from 'node:path';
 
 // Exercise the assembled app; never use a developer's cloud database or push keys.
 test('private workspace: agent submits a plan; owner reviews it; agent sees Done', async t => {
-  for (const key of ['DATABASE_URL','VERCEL','VAPID_PUBLIC_KEY','VAPID_PRIVATE_KEY','VAPID_SUBJECT']) delete process.env[key];
+  for (const key of [...databaseUrlKeys,'VERCEL','VAPID_PUBLIC_KEY','VAPID_PRIVATE_KEY','VAPID_SUBJECT']) delete process.env[key];
   process.env.NODE_ENV = 'test';
   process.env.GLAMP_DATA_DIR = await mkdtemp(join(tmpdir(), 'glamp-workspace-'));
   t.after(() => rm(process.env.GLAMP_DATA_DIR, { recursive:true, force:true }));
