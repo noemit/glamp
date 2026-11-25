@@ -1,0 +1,27 @@
+{
+  "name": "glamp-workspace",
+  "version": "0.1.0",
+  "description": "A small project space for humans and their agents.",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "bin": {
+    "glamp": "./bin/glamp.mjs"
+  },
+  "scripts": {
+    "setup": "node scripts/setup.mjs",
+    "start": "node --env-file-if-exists=.env scripts/start.mjs",
+    "dev": "node --watch --env-file-if-exists=.env scripts/start.mjs",
+    "glamp": "node --env-file-if-exists=.env bin/glamp.mjs",
+    "test": "node --test test/*.test.mjs"
+  },
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3.1177.0",
+    "@neondatabase/serverless": "^1.2.1",
+    "express": "^5.3.0",
+    "web-push": "^3.6.7"
+  }
+}

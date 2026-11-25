@@ -1,0 +1,4 @@
+.env*
+.glamp/
+test/
+**/node_modules/
