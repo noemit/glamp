@@ -265,6 +265,13 @@ textarea {
   min-height: 44px;
 }
 
+.brand-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
 .brand {
   display: inline-flex;
   align-items: center;
@@ -272,6 +279,76 @@ textarea {
   font: 650 17px/1 var(--display);
   letter-spacing: -0.025em;
   color: var(--ink);
+  flex: none;
+}
+
+.project-switcher {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.project-sep {
+  color: #c5c9d2;
+  font-size: 16px;
+  font-weight: 400;
+  user-select: none;
+}
+
+.project-select-wrap {
+  display: inline-flex;
+  align-items: center;
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+  padding: 0 8px 0 10px;
+  min-height: 34px;
+  max-width: 190px;
+}
+
+.project-select-wrap:hover {
+  border-color: #c5c9d2;
+}
+
+.project-select-wrap select {
+  border: 0;
+  background: transparent;
+  padding: 5px 2px;
+  font-size: 13.5px;
+  font-weight: 550;
+  color: var(--ink);
+  cursor: pointer;
+  max-width: 100%;
+}
+
+.project-select-wrap select:focus {
+  box-shadow: none;
+  outline: none;
+}
+
+.project-add-btn {
+  display: inline-grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 9px;
+  border: 1px solid var(--line-strong);
+  background: var(--surface);
+  color: var(--ink-secondary);
+  padding: 0;
+  flex: none;
+}
+
+.project-add-btn:hover {
+  background: var(--card-bg);
+  color: var(--ink);
+  border-color: #c5c9d2;
+}
+
+.project-add-btn .icon {
+  width: 15px;
+  height: 15px;
 }
 
 .brand-mark {
@@ -752,6 +829,12 @@ textarea {
 .pill.kind-task {
   background: var(--yellow-soft);
   color: var(--yellow-text);
+}
+
+.pill.project-tag {
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+  color: var(--ink-secondary);
 }
 
 /* Flat Light-Gray Cards directly on White Sheet (exact reference!) */

@@ -5,7 +5,7 @@ import { mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from 'node:f
 import path from 'node:path';
 import { neon } from '@neondatabase/serverless';
 import { S3Client, PutObjectCommand, GetObjectCommand, DeleteObjectCommand } from '@aws-sdk/client-s3';
-import { cardExists } from './cards.mjs';
+import { cardExists, handleDbError } from './cards.mjs';
 
 const MAX_BYTES = 3 * 1024 * 1024;
 const IMAGE_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -65,30 +65,74 @@ function localStore(root, cardId) {
   };
 }
 
-// Provision the private bucket and run sql/images.sql out of band. Use the
-// *branch* S3 endpoint and storage credential (token_id / s3_secret_access_key),
-// not an AWS account, Neon management API token, or a public/presigned URL.
-let cloud;
+let cachedSql = { url: null, sql: null };
+let cachedS3 = { key: null, s3: null };
+function neonClient(url) {
+  if (cachedSql.url !== url) cachedSql = { url, sql: neon(url) };
+  return cachedSql.sql;
+}
+function s3Client(endpoint, region, accessKeyId, secretAccessKey) {
+  const key = `${endpoint}|${region}|${accessKeyId}`;
+  if (cachedS3.key !== key) {
+    cachedS3 = {
+      key,
+      s3: new S3Client({
+        endpoint, region, forcePathStyle: true,
+        credentials: { accessKeyId, secretAccessKey },
+        requestChecksumCalculation: 'WHEN_REQUIRED',
+      }),
+    };
+  }
+  return cachedS3.s3;
+}
+
+// Store private card images in Neon Postgres (bytea in glamp.card_images.data) by default
+// when connected to Neon, or in an external S3-compatible bucket when explicitly configured.
 function storeFor(cardId) {
   const env = process.env;
   const { NODE_ENV, VERCEL, GLAMP_DATA_DIR, NEON_STORAGE_BUCKET: Bucket } = env;
   const url = databaseUrl(env);
-  // The GLAMP names override the AWS-standard names emitted by `neon env pull`,
-  // so Vercel's own runtime region/credentials can remain untouched.
   const endpoint = env.GLAMP_S3_ENDPOINT ?? env.AWS_ENDPOINT_URL_S3;
   const region = env.GLAMP_S3_REGION ?? env.AWS_REGION;
   const accessKeyId = env.GLAMP_S3_ACCESS_KEY_ID ?? env.AWS_ACCESS_KEY_ID;
   const secretAccessKey = env.GLAMP_S3_SECRET_ACCESS_KEY ?? env.AWS_SECRET_ACCESS_KEY;
-  const storageConfigured = Bucket || endpoint || env.GLAMP_S3_REGION || env.GLAMP_S3_ACCESS_KEY_ID || env.GLAMP_S3_SECRET_ACCESS_KEY;
+  const storageConfigured = Boolean(
+    Bucket || endpoint || env.GLAMP_S3_REGION || env.GLAMP_S3_ACCESS_KEY_ID || env.GLAMP_S3_SECRET_ACCESS_KEY,
+  );
   if (NODE_ENV !== 'production' && !VERCEL && !url && !storageConfigured) {
     return localStore(GLAMP_DATA_DIR || '.glamp', cardId);
   }
-  if (![url, Bucket, endpoint, region, accessKeyId, secretAccessKey].every(Boolean) || !/^https:\/\//i.test(endpoint)) {
+  if (!url) {
     throw Object.assign(new Error('Image storage not configured'), { status: 503, publicMessage: 'Image storage is not configured.' });
   }
-  cloud ??= { sql: neon(url), s3: new S3Client({ endpoint, region, forcePathStyle: true,
-    credentials: { accessKeyId, secretAccessKey }, requestChecksumCalculation: 'WHEN_REQUIRED' }) };
-  const { sql, s3 } = cloud;
+  const sql = neonClient(url);
+  if (!storageConfigured) {
+    return {
+      list() {
+        return sql`SELECT id, name, content_type, size, created_at FROM glamp.card_images
+                   WHERE card_id = ${cardId} ORDER BY created_at, id`;
+      },
+      async put(row, bytes) {
+        const Key = `card-images/${row.id}`;
+        await sql`INSERT INTO glamp.card_images (id, card_id, object_key, name, content_type, size, data, created_at)
+                  VALUES (${row.id}, ${cardId}, ${Key}, ${row.name}, ${row.content_type}, ${row.size}, ${bytes}, ${row.created_at})`;
+      },
+      async get(id) {
+        const [row] = await sql`SELECT content_type, size, data FROM glamp.card_images
+                                WHERE card_id = ${cardId} AND id = ${id}`;
+        if (!row || !row.data) return null;
+        const bytes = Buffer.isBuffer(row.data) ? row.data : Buffer.from(row.data);
+        if (bytes.length !== row.size || bytes.length > MAX_BYTES) {
+          throw new Error('Stored image size mismatch');
+        }
+        return { row, bytes };
+      },
+    };
+  }
+  if (![Bucket, endpoint, region, accessKeyId, secretAccessKey].every(Boolean) || !/^https:\/\//i.test(endpoint)) {
+    throw Object.assign(new Error('Image storage not configured'), { status: 503, publicMessage: 'Image storage is not configured.' });
+  }
+  const s3 = s3Client(endpoint, region, accessKeyId, secretAccessKey);
   return {
     list() {
       return sql`SELECT id, name, content_type, size, created_at FROM glamp.card_images
@@ -161,3 +205,4 @@ imagesRouter.get('/:id/images/:imageId', async (req, res) => {
   }
   res.type(result.row.content_type).send(result.bytes);
 });
+imagesRouter.use(handleDbError);

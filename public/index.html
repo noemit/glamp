@@ -76,11 +76,25 @@
 
     <header class="masthead">
       <div class="shell mast-inner">
-        <div class="brand">
-          <span class="brand-mark">
-            <svg class="icon" aria-hidden="true"><use href="#i-tent" /></svg>
-          </span>
-          <span class="brand-name">Glamp</span>
+        <div class="brand-group">
+          <div class="brand">
+            <span class="brand-mark">
+              <svg class="icon" aria-hidden="true"><use href="#i-tent" /></svg>
+            </span>
+            <span class="brand-name">Glamp</span>
+          </div>
+          <div id="project-switcher" class="project-switcher" hidden>
+            <span class="project-sep" aria-hidden="true">/</span>
+            <label class="project-select-wrap">
+              <span class="sr-only">Switch project</span>
+              <select id="project-select" aria-label="Switch project">
+                <option value="all">All projects</option>
+              </select>
+            </label>
+            <button id="new-project" class="project-add-btn" type="button" aria-label="New project" title="New project">
+              <svg class="icon" aria-hidden="true"><use href="#i-plus" /></svg>
+            </button>
+          </div>
         </div>
         <nav id="views" class="views" aria-label="Workspace views" hidden>
           <button data-view="docs" aria-current="page" type="button">

@@ -1,7 +1,7 @@
 import express from 'express';
 import { fileURLToPath } from 'node:url';
 import { identity, requireAuth, requireOwner, guardOrigin, sessions } from './server/auth.mjs';
-import { agentsRouter, cardsRouter, initStore } from './server/cards.mjs';
+import { agentsRouter, cardsRouter, initStore, projectsRouter } from './server/cards.mjs';
 import { imagesRouter } from './server/images.mjs';
 import { pushRouter, notifyReview } from './server/push.mjs';
 
@@ -23,6 +23,7 @@ const ensureStore = async (_req, _res, next) => {
 };
 app.use('/api/cards', ensureStore, imagesRouter, express.json({ limit: '1mb' }), cardsRouter);
 app.use('/api/agents', ensureStore, express.json({ limit: '64kb' }), agentsRouter);
+app.use('/api/projects', ensureStore, express.json({ limit: '64kb' }), projectsRouter);
 app.use('/api/push', requireOwner, express.json({ limit: '8kb' }), pushRouter);
 app.use('/api', (_req,res) => res.status(404).json({error:'Unknown API route.'}));
 app.use(express.static(fileURLToPath(new URL('./public', import.meta.url))));

@@ -5,6 +5,7 @@
 -- browser-facing role, and never include this schema in a public Data API.
 BEGIN;
 GRANT USAGE ON SCHEMA glamp TO glamp_app;
+GRANT SELECT, INSERT, UPDATE ON glamp.projects TO glamp_app;
 GRANT SELECT, INSERT, UPDATE ON glamp.cards TO glamp_app;
 GRANT SELECT, INSERT, UPDATE ON glamp.agent_profiles TO glamp_app;
 GRANT SELECT, INSERT ON glamp.card_comments TO glamp_app;

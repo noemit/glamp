@@ -1,4 +1,5 @@
 import { databaseUrlKeys } from '../server/database-url.mjs';
+import { neonConfig } from '@neondatabase/serverless';
 import assert from 'node:assert/strict';
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdtemp, readdir, rm } from 'node:fs/promises';
@@ -118,5 +119,58 @@ test('private card image API', async t => {
       delete process.env.GLAMP_S3_ENDPOINT;
       assert.equal((await get('/api/cards/invalid-uuid/images')).status, 503);
     } finally { for (const k of cloudKeys) delete process.env[k]; }
+  });
+
+  await t.test('stores and serves image blobs directly in Neon Postgres when only POSTGRES_URL is set', async () => {
+    const savedFetch = neonConfig.fetchFunction;
+    const stored = new Map();
+    const cardId = randomUUID();
+    neonConfig.fetchFunction = async (_url, req) => {
+      const { query, params } = JSON.parse(req.body);
+      if (query.includes('INSERT INTO glamp.card_images')) {
+        stored.set(params[0], {
+          id: params[0], card_id: params[1], name: params[3],
+          content_type: params[4], size: params[5], data: params[6], created_at: params[7],
+        });
+        return Response.json({ command: 'INSERT', rowCount: 1, rows: [], fields: [] });
+      }
+      if (query.includes('SELECT id, name, content_type, size, created_at FROM glamp.card_images')) {
+        const rows = [...stored.values()].filter(r => r.card_id === params[0]).map(r => [r.id, r.name, r.content_type, String(r.size), r.created_at]);
+        return Response.json({
+          command: 'SELECT', rowCount: rows.length, rows,
+          fields: [
+            { name: 'id', dataTypeID: 2950 }, { name: 'name', dataTypeID: 25 },
+            { name: 'content_type', dataTypeID: 25 }, { name: 'size', dataTypeID: 23 }, { name: 'created_at', dataTypeID: 25 },
+          ],
+        });
+      }
+      if (query.includes('SELECT content_type, size, data FROM glamp.card_images')) {
+        const hit = stored.get(params[1]);
+        const rows = hit && hit.card_id === params[0] ? [[hit.content_type, String(hit.size), hit.data]] : [];
+        return Response.json({
+          command: 'SELECT', rowCount: rows.length, rows,
+          fields: [{ name: 'content_type', dataTypeID: 25 }, { name: 'size', dataTypeID: 23 }, { name: 'data', dataTypeID: 17 }],
+        });
+      }
+      return Response.json({ command: 'SELECT', rowCount: 0, rows: [], fields: [] });
+    };
+    process.env.POSTGRES_URL = 'postgres://test:test@ep-demo.aws.neon.tech/neondb?sslmode=require';
+    try {
+      // cardExists still uses the local SQLite store initialized in before(), so use an existing card ID from local store
+      const existingCardId = a.split('/')[3];
+      const upload = await post(`/api/cards/${existingCardId}/images`, png, 'image/png', 'neon-blob.png');
+      assert.equal(upload.status, 201);
+      const { image } = await upload.json();
+      assert.equal(image.name, 'neon-blob.png');
+      const listed = await (await get(`/api/cards/${existingCardId}/images`)).json();
+      assert.equal(listed.images.length, 1);
+      assert.equal(listed.images[0].id, image.id);
+      const dl = await get(image.url);
+      assert.equal(dl.status, 200);
+      assert.deepEqual(Buffer.from(await dl.arrayBuffer()), png);
+    } finally {
+      neonConfig.fetchFunction = savedFetch;
+      for (const k of cloudKeys) delete process.env[k];
+    }
   });
 });

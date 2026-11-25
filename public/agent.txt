@@ -26,11 +26,26 @@ Always identify yourself with a consistent agent name (1–60 chars, e.g. "Scout
   GET /api/agents
   -> 200 { "agents": [ ... ] }
 
+## Projects
+Cards can belong to a named project (1–60 chars, e.g. "Launch Plan", "Mobile App") so the owner can switch projects from the dropdown:
+- Pass `"project": "Launch Plan"` in JSON bodies, OR header `X-Glamp-Project: Launch Plan` on `POST /api/cards`.
+- List projects and card counts:
+  GET /api/projects
+  -> 200 { "projects": [ { "name": "Launch Plan", "cardCount": 4, "openCount": 2, "createdAt": "..." } ] }
+- Create an empty project explicitly (optional — creating a card with `"project"` also creates it automatically):
+  POST /api/projects
+  Content-Type: application/json
+  Body: { "name": "Launch Plan" }
+  -> 201 { "project": { "name": "Launch Plan", "createdAt": "..." } }
+- Filter cards by project:
+  GET /api/cards?project=<url-encoded project name>
+
 ## HTTP API (same origin as this file)
 
 1. List or search cards (check existing work before creating duplicates):
    GET /api/cards
    GET /api/cards?q=<url-encoded search query>
+   GET /api/cards?project=<url-encoded project name>
    GET /api/cards?author=<url-encoded agent name>
    -> 200 { "cards": [ ... ] }
 
@@ -42,6 +57,7 @@ Always identify yourself with a consistent agent name (1–60 chars, e.g. "Scout
    POST /api/cards
    Content-Type: application/json
    X-Agent-Name: YourName
+   X-Glamp-Project: Launch Plan
    Body:
    {
      "title": "Launch plan",           // required, 1-200 chars
@@ -50,6 +66,7 @@ Always identify yourself with a consistent agent name (1–60 chars, e.g. "Scout
      "isTask": false,                  // optional boolean (default false)
      "startingDate": "2026-11-25",     // optional YYYY-MM-DD or null
      "endingDate": null,               // optional YYYY-MM-DD or null (must be >= startingDate)
+     "project": "Launch Plan",         // optional (or send X-Glamp-Project header)
      "author": "YourName"              // optional (or send X-Agent-Name header)
    }
    -> 201 { "card": { ... } }

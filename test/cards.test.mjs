@@ -30,6 +30,7 @@ describe('cards HTTP contract', { concurrency: false }, () => {
     app.locals.notifyReview = async () => {};
     app.use('/api/cards', cards.cardsRouter);
     app.use('/api/agents', cards.agentsRouter);
+    app.use('/api/projects', cards.projectsRouter);
     server = app.listen(0, '127.0.0.1');
     await once(server, 'listening');
     base = `http://127.0.0.1:${server.address().port}/api/cards`;
@@ -86,9 +87,10 @@ describe('cards HTTP contract', { concurrency: false }, () => {
     assert.equal(first.endingDate, null);
     assert.equal(first.status, 'open');
     assert.equal(first.author, null);
+    assert.equal(first.project, null);
     assert.deepEqual(first.contributors, []);
     assert.equal(first.commentCount, 0);
-    assert.deepEqual(Object.keys(first).sort(), ['id', 'title', 'body', 'isTask', 'status', 'startingDate', 'endingDate', 'author', 'contributors', 'commentCount', 'createdAt', 'updatedAt'].sort());
+    assert.deepEqual(Object.keys(first).sort(), ['id', 'title', 'body', 'isTask', 'status', 'startingDate', 'endingDate', 'author', 'project', 'contributors', 'commentCount', 'createdAt', 'updatedAt'].sort());
     for (const stamp of [first.createdAt, first.updatedAt]) assert.equal(new Date(stamp).toISOString(), stamp);
     assert.equal(await cardExists(first.id), true);
     assert.deepEqual(await get(first.id), first);
@@ -333,5 +335,44 @@ describe('cards HTTP contract', { concurrency: false }, () => {
     assert.equal(scout.color, 'sky');
     assert.equal(scout.cardCount, 1);
     assert.equal(planner.commentCount, 1);
+  });
+
+  it('supports projects, project creation, moving cards, and project filtering', async () => {
+    const origin = base.replace(/\/api\/cards$/, '');
+    const createProj = await fetch(`${origin}/api/projects`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'Launch Plan' }),
+    });
+    assert.equal(createProj.status, 201);
+    const { project } = await createProj.json();
+    assert.equal(project.name, 'Launch Plan');
+
+    // Create card with case-different project name; should normalize to existing canonical casing
+    const cardRes = await fetch(base, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Glamp-Project': 'launch plan' },
+      body: JSON.stringify({ title: 'Prep release notes' }),
+    });
+    assert.equal(cardRes.status, 201);
+    const { card } = await cardRes.json();
+    assert.equal(card.project, 'Launch Plan');
+
+    // Filter by project
+    const filtered = await (await fetch(`${base}?project=launch+plan`)).json();
+    assert.ok(filtered.cards.some(c => c.id === card.id));
+    assert.ok(filtered.cards.every(c => c.project === 'Launch Plan'));
+
+    // Move card to a brand-new project via PATCH (auto-registers the new project)
+    const moved = await patch(card.id, { project: 'Mobile App' });
+    assert.equal(moved.project, 'Mobile App');
+
+    // Projects list includes both projects with accurate counts
+    const listed = await (await fetch(`${origin}/api/projects`)).json();
+    const launch = listed.projects.find(p => p.name === 'Launch Plan');
+    const mobile = listed.projects.find(p => p.name === 'Mobile App');
+    assert.equal(launch.cardCount, 0);
+    assert.equal(mobile.cardCount, 1);
+    assert.equal(mobile.openCount, 1);
   });
 });

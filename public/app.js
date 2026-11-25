@@ -15,6 +15,8 @@ const state = {
   view: 'docs',
   cards: [],
   agents: new Map(),
+  projects: [],
+  project: 'all',
   loaded: false,
   loadError: '',
   month: new Date(),
@@ -203,6 +205,42 @@ function resetFilters() {
   syncFilterChips();
 }
 
+function syncProjectOptions() {
+  const select = $('project-select');
+  const names = new Map();
+  for (const p of state.projects) names.set(p.name.toLowerCase(), p.name);
+  let hasUnassigned = false;
+  for (const card of state.cards) {
+    if (card.project) {
+      if (!names.has(card.project.toLowerCase())) names.set(card.project.toLowerCase(), card.project);
+    } else {
+      hasUnassigned = true;
+    }
+  }
+  const sorted = [...names.values()].sort((a, b) => a.localeCompare(b));
+  const current = state.project;
+  select.replaceChildren();
+  const allOpt = node('option', '', 'All projects');
+  allOpt.value = 'all';
+  select.append(allOpt);
+  for (const name of sorted) {
+    const opt = node('option', '', name);
+    opt.value = name;
+    select.append(opt);
+  }
+  if (hasUnassigned && sorted.length) {
+    const noneOpt = node('option', '', 'Unassigned');
+    noneOpt.value = '__unassigned__';
+    select.append(noneOpt);
+  }
+  if (current !== 'all' && current !== '__unassigned__' && !names.has(current.toLowerCase())) {
+    state.project = 'all';
+  } else if (current === '__unassigned__' && (!hasUnassigned || !sorted.length)) {
+    state.project = 'all';
+  }
+  select.value = state.project;
+}
+
 function syncAgentOptions() {
   const select = $('filter-agent');
   const names = new Map();
@@ -257,6 +295,8 @@ function lock(reason = '') {
   state.loaded = false;
   state.cards = [];
   state.agents = new Map();
+  state.projects = [];
+  state.project = 'all';
   state.loadError = '';
   state.view = 'docs';
   state.month = new Date();
@@ -265,6 +305,7 @@ function lock(reason = '') {
   resetFilters();
   $('workspace').hidden = true;
   $('views').hidden = true;
+  $('project-switcher').hidden = true;
   $('account').hidden = true;
   if (dialog.open) dialog.close();
   $('detail').replaceChildren();
@@ -301,6 +342,7 @@ async function checkSession(restore = false) {
     $('boot').hidden = true;
     $('workspace').hidden = false;
     $('views').hidden = false;
+    $('project-switcher').hidden = false;
     $('account').hidden = false;
     syncFilterChips();
     refresh();
@@ -387,6 +429,12 @@ $('push').addEventListener('click', async () => {
   }
 });
 
+$('project-select').addEventListener('change', (e) => {
+  state.project = e.target.value;
+  render();
+});
+$('new-project').addEventListener('click', () => showNewProject());
+
 // Filter chips
 $('filter-type').addEventListener('change', (e) => {
   state.filters.type = e.target.value;
@@ -421,14 +469,17 @@ async function refresh() {
   state.loadError = '';
   render();
   try {
-    const [cardsRes, agentsRes] = await Promise.all([
+    const [cardsRes, agentsRes, projectsRes] = await Promise.all([
       request(`/api/cards?q=${encodeURIComponent(query)}`),
       request('/api/agents').catch(() => ({ agents: [] })),
+      request('/api/projects').catch(() => ({ projects: [] })),
     ]);
     if (version !== listVersion) return;
     state.cards = cardsRes.cards;
     state.agents = new Map((agentsRes?.agents || []).map((a) => [a.name.toLowerCase(), a]));
+    state.projects = projectsRes?.projects || [];
     state.loaded = true;
+    syncProjectOptions();
     syncAgentOptions();
     render();
   } catch (error) {
@@ -480,6 +531,11 @@ function hasActiveFilters() {
 function applyFilters(cards) {
   const now = new Date();
   return cards.filter((card) => {
+    if (state.project === '__unassigned__') {
+      if (card.project) return false;
+    } else if (state.project !== 'all') {
+      if ((card.project || '').toLowerCase() !== state.project.toLowerCase()) return false;
+    }
     if (state.view === 'todos' && !card.isTask) return false;
     if (state.view !== 'todos') {
       if (state.filters.type === 'note' && card.isTask) return false;
@@ -510,8 +566,11 @@ function blankState() {
       }),
     );
   const tasks = state.view === 'todos';
+  const inProject = state.project !== 'all' && state.project !== '__unassigned__';
   return empty(
-    tasks ? 'No to-dos yet' : 'No notes yet',
+    inProject
+      ? `No ${tasks ? 'to-dos' : 'notes'} in ${state.project}`
+      : tasks ? 'No to-dos yet' : 'No notes yet',
     tasks
       ? 'Add your first to-do card to start tracking tasks.'
       : 'Add your first note, plan, or to-do card.',
@@ -602,6 +661,9 @@ function docsView(cards) {
     const left = node('div', 'card-top-left');
 
     const pills = node('span', 'card-pills');
+    if (card.project && state.project === 'all') {
+      pills.append(node('span', 'pill project-tag', card.project));
+    }
     const tp = timePill(card);
     if (tp) pills.append(tp);
     pills.append(badge(card.status));
@@ -1052,6 +1114,7 @@ function showCard(card) {
   const heading = sheet(card.title),
     detail = $('detail');
   const top = node('div', 'detail-top');
+  if (card.project) top.append(node('span', 'pill project-tag', card.project));
   top.append(
     badge(card.status),
     node('span', `pill ${card.isTask ? 'kind-task' : 'kind-note'}`, card.isTask ? 'Task' : 'Note'),
@@ -1317,6 +1380,45 @@ function editorInput(tag, name, value) {
   input.value = value ?? '';
   return input;
 }
+function showNewProject() {
+  const version = ++sheetVersion;
+  sheet('New project');
+  const form = node('form'),
+    fields = node('div', 'fields');
+  const nameInput = editorInput('input', 'project-name', '');
+  nameInput.required = true;
+  nameInput.maxLength = 60;
+  nameInput.placeholder = 'e.g. Launch Plan, Personal, Mobile App';
+  fields.append(field('Project name', nameInput));
+  const buttons = node('div', 'form-bottom'),
+    save = node('button', 'btn primary', 'Create project');
+  save.type = 'submit';
+  buttons.append(button('Cancel', () => closeSheet()), save);
+  form.append(fields, buttons);
+  $('detail').append(form);
+  nameInput.focus();
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const name = nameInput.value.trim();
+    if (!name || save.disabled) return;
+    save.disabled = true;
+    sheetMessage('Creating project…');
+    try {
+      const { project } = await request('/api/projects', json('POST', { name }));
+      if (version === sheetVersion) {
+        state.project = project.name;
+        closeSheet();
+        notify(`Switched to ${project.name}.`);
+      }
+      refresh();
+    } catch (error) {
+      if (error !== stale && version === sheetVersion) {
+        save.disabled = false;
+        sheetMessage(message(error));
+      }
+    }
+  });
+}
 function showEditor(card) {
   const version = ++sheetVersion;
   sheet(card ? 'Edit card' : 'New card');
@@ -1351,6 +1453,21 @@ function showEditor(card) {
   starting.type = 'date';
   const ending = editorInput('input', 'endingDate', card?.endingDate);
   ending.type = 'date';
+  const defaultProject =
+    card?.project ?? (state.project !== 'all' && state.project !== '__unassigned__' ? state.project : '');
+  const project = editorInput('input', 'project', defaultProject);
+  project.maxLength = 60;
+  project.placeholder = 'Optional (pick or type a new project)';
+  project.setAttribute('list', 'project-suggestions');
+  const datalist = node('datalist');
+  datalist.id = 'project-suggestions';
+  const projNames = new Set(state.projects.map((p) => p.name));
+  for (const c of state.cards) if (c.project) projNames.add(c.project);
+  for (const name of [...projNames].sort((a, b) => a.localeCompare(b))) {
+    const opt = node('option');
+    opt.value = name;
+    datalist.append(opt);
+  }
   const author = editorInput('input', 'author', card?.author);
   author.maxLength = 60;
   author.placeholder = 'Optional (e.g. Owner or agent name)';
@@ -1365,7 +1482,9 @@ function showEditor(card) {
   options.append(field('Status', status), type);
   const dates = node('div', 'two-col');
   dates.append(field('Start date (optional)', starting), field('End date (optional)', ending));
-  fields.append(field('Title', title), bodyField, options, dates, field('Author (optional)', author));
+  const attribution = node('div', 'two-col');
+  attribution.append(field('Project (optional)', project), field('Author (optional)', author));
+  fields.append(field('Title', title), bodyField, options, dates, attribution, datalist);
   const buttons = node('div', 'form-bottom'),
     save = node('button', 'btn primary', 'Save card');
   save.type = 'submit';
@@ -1392,6 +1511,7 @@ function showEditor(card) {
       isTask: isTask.checked,
       startingDate: starting.value || null,
       endingDate: ending.value || null,
+      project: project.value.trim() || null,
       author: author.value.trim() || null,
     };
     // Send only edited fields, so fixing a typo doesn't undo an agent's status change.

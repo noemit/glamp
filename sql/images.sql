@@ -1,4 +1,4 @@
--- Apply AFTER sql/schema.sql to the same Neon branch as the private storage bucket.
+-- Apply AFTER sql/schema.sql to the same Neon branch.
 BEGIN;
 CREATE TABLE IF NOT EXISTS glamp.card_images (
   id uuid PRIMARY KEY,
@@ -7,8 +7,12 @@ CREATE TABLE IF NOT EXISTS glamp.card_images (
   name text NOT NULL CHECK (octet_length(name) BETWEEN 1 AND 255),
   content_type text NOT NULL CHECK (content_type IN ('image/jpeg', 'image/png', 'image/webp')),
   size integer NOT NULL CHECK (size BETWEEN 1 AND 3145728),
+  data bytea CHECK (data IS NULL OR octet_length(data) BETWEEN 1 AND 3145728),
   created_at timestamptz NOT NULL DEFAULT now()
 );
+ALTER TABLE glamp.card_images
+  ADD COLUMN IF NOT EXISTS data bytea
+  CHECK (data IS NULL OR octet_length(data) BETWEEN 1 AND 3145728);
 CREATE INDEX IF NOT EXISTS card_images_card_created_idx ON glamp.card_images (card_id, created_at, id);
 REVOKE ALL ON glamp.card_images FROM PUBLIC;
 COMMIT;

@@ -2,6 +2,13 @@
 -- Each database holds one workspace; auth is enforced by the API, not by UUIDs.
 BEGIN;
 CREATE SCHEMA IF NOT EXISTS glamp;
+
+CREATE TABLE IF NOT EXISTS glamp.projects (
+  name text PRIMARY KEY CHECK (char_length(name) BETWEEN 1 AND 60 AND btrim(name) <> ''),
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+REVOKE ALL ON glamp.projects FROM PUBLIC;
+
 CREATE TABLE IF NOT EXISTS glamp.cards (
   id uuid PRIMARY KEY,
   title text NOT NULL CHECK (char_length(title) BETWEEN 1 AND 200 AND btrim(title) <> ''),
@@ -11,14 +18,17 @@ CREATE TABLE IF NOT EXISTS glamp.cards (
   starting_date date CHECK (starting_date BETWEEN DATE '0001-01-01' AND DATE '9999-12-31'),
   ending_date date CHECK (ending_date BETWEEN DATE '0001-01-01' AND DATE '9999-12-31'),
   author text CHECK (author IS NULL OR (char_length(author) BETWEEN 1 AND 60 AND btrim(author) <> '')),
+  project text CHECK (project IS NULL OR (char_length(project) BETWEEN 1 AND 60 AND btrim(project) <> '')),
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now(),
   revision bigint NOT NULL DEFAULT 0 CHECK (revision >= 0),
   CHECK (starting_date <= ending_date)
 );
 ALTER TABLE glamp.cards ADD COLUMN IF NOT EXISTS author text CHECK (author IS NULL OR (char_length(author) BETWEEN 1 AND 60 AND btrim(author) <> ''));
+ALTER TABLE glamp.cards ADD COLUMN IF NOT EXISTS project text CHECK (project IS NULL OR (char_length(project) BETWEEN 1 AND 60 AND btrim(project) <> ''));
 CREATE INDEX IF NOT EXISTS cards_updated_id_idx ON glamp.cards (updated_at DESC, id);
 CREATE INDEX IF NOT EXISTS cards_author_idx ON glamp.cards (lower(author)) WHERE author IS NOT NULL;
+CREATE INDEX IF NOT EXISTS cards_project_idx ON glamp.cards (lower(project)) WHERE project IS NOT NULL;
 REVOKE ALL ON glamp.cards FROM PUBLIC;
 
 CREATE TABLE IF NOT EXISTS glamp.agent_profiles (

@@ -4,7 +4,7 @@ import { mkdir, open } from 'node:fs/promises';
 import path from 'node:path';
 import express from 'express';
 
-const defaults = { body: '', status: 'open', isTask: false, startingDate: null, endingDate: null, author: null };
+const defaults = { body: '', status: 'open', isTask: false, startingDate: null, endingDate: null, author: null, project: null };
 const editable = new Set(['title', ...Object.keys(defaults)]);
 const agentColors = ['slate', 'sky', 'green', 'amber', 'rose', 'teal'];
 const uuid = /^[a-f\d]{8}-(?:[a-f\d]{4}-){3}[a-f\d]{12}$/i;
@@ -39,6 +39,11 @@ function headerAuthor(req) {
   if (raw === undefined || !raw.trim()) return null;
   return checkAuthor(raw, 'x-agent-name', false);
 }
+function headerProject(req) {
+  const raw = req.get('x-glamp-project');
+  if (raw === undefined || !raw.trim()) return null;
+  return checkAuthor(raw, 'x-glamp-project', false);
+}
 function defaultColorFor(name) {
   let hash = 0;
   for (const ch of name.toLowerCase()) hash = (hash * 31 + ch.codePointAt(0)) >>> 0;
@@ -66,6 +71,7 @@ function changes(input) {
   if (Object.hasOwn(result, 'status') && !['open', 'review', 'done'].includes(result.status)) invalid('Invalid status.');
   if (Object.hasOwn(result, 'isTask') && typeof result.isTask !== 'boolean') invalid('isTask must be boolean.');
   if (Object.hasOwn(result, 'author')) result.author = checkAuthor(result.author, 'author', false);
+  if (Object.hasOwn(result, 'project')) result.project = checkAuthor(result.project, 'project', false);
   for (const name of ['startingDate', 'endingDate']) if (Object.hasOwn(result, name)) checkDate(result[name], name);
   return result;
 }
@@ -83,7 +89,7 @@ async function openStore() {
     return {
       query: (statement, params) => sql.query(statement, params),
       dates: "to_char(starting_date, 'YYYY-MM-DD') AS starting_date, to_char(ending_date, 'YYYY-MM-DD') AS ending_date",
-      table: 'glamp.cards', commentsTable: 'glamp.card_comments', profilesTable: 'glamp.agent_profiles',
+      table: 'glamp.cards', commentsTable: 'glamp.card_comments', profilesTable: 'glamp.agent_profiles', projectsTable: 'glamp.projects',
       contains: 'strpos', now: 'statement_timestamp()', boolean: value => value,
     };
   }
@@ -102,11 +108,16 @@ async function openStore() {
     db.exec(`PRAGMA busy_timeout = 5000;
       PRAGMA foreign_keys = ON;
       PRAGMA journal_mode = WAL;
+      CREATE TABLE IF NOT EXISTS projects (
+        name TEXT PRIMARY KEY CHECK (length(name) BETWEEN 1 AND 60),
+        created_at TEXT NOT NULL DEFAULT (${now})
+      ) STRICT;
       CREATE TABLE IF NOT EXISTS cards (
         id TEXT PRIMARY KEY, title TEXT NOT NULL CHECK (length(title) BETWEEN 1 AND 200),
         body TEXT NOT NULL CHECK (length(body) <= 20000), status TEXT NOT NULL CHECK (status IN ('open','review','done')),
         is_task INTEGER NOT NULL CHECK (is_task IN (0,1)), starting_date TEXT, ending_date TEXT,
         author TEXT CHECK (author IS NULL OR length(author) BETWEEN 1 AND 60),
+        project TEXT CHECK (project IS NULL OR length(project) BETWEEN 1 AND 60),
         created_at TEXT NOT NULL DEFAULT (${now}), updated_at TEXT NOT NULL DEFAULT (${now}),
         revision INTEGER NOT NULL DEFAULT 0, CHECK (starting_date <= ending_date)
       ) STRICT;
@@ -129,6 +140,9 @@ async function openStore() {
     if (!cols.some(c => c.name === 'author')) {
       db.exec('ALTER TABLE cards ADD COLUMN author TEXT;');
     }
+    if (!cols.some(c => c.name === 'project')) {
+      db.exec('ALTER TABLE cards ADD COLUMN project TEXT;');
+    }
     // SQLite's built-in lower() only folds ASCII.
     db.function('lower', { deterministic: true }, s => s.toLowerCase());
   } catch (err) {
@@ -141,14 +155,14 @@ async function openStore() {
       return db.prepare(statement).all(bindings);
     },
     dates: 'starting_date, ending_date', table: 'cards', commentsTable: 'card_comments',
-    profilesTable: 'agent_profiles', contains: 'instr', now, boolean: Number,
+    profilesTable: 'agent_profiles', projectsTable: 'projects', contains: 'instr', now, boolean: Number,
   };
 }
 let store;
 export function initStore() {
   return store ??= openStore().catch(err => { store = undefined; throw err; });
 }
-const columns = db => `id, title, body, status, is_task, ${db.dates}, author, created_at, updated_at, revision`;
+const columns = db => `id, title, body, status, is_task, ${db.dates}, author, project, created_at, updated_at, revision`;
 function uniqueContributors(cardAuthor, commentAuthors = []) {
   const seen = new Set();
   const list = [];
@@ -165,6 +179,7 @@ function toCard(row, commentAuthors = []) {
   return {
     id: row.id, title: row.title, body: row.body, status: row.status, isTask: Boolean(row.is_task),
     startingDate: row.starting_date, endingDate: row.ending_date, author: row.author ?? null,
+    project: row.project ?? null,
     contributors: uniqueContributors(row.author ?? null, commentAuthors),
     commentCount: commentAuthors.length,
     createdAt: new Date(row.created_at).toISOString(), updatedAt: new Date(row.updated_at).toISOString(),
@@ -176,7 +191,7 @@ function toComment(row) {
     createdAt: new Date(row.created_at).toISOString(),
   };
 }
-const values = (db, c) => [c.title, c.body, c.status, db.boolean(c.isTask), c.startingDate, c.endingDate, c.author];
+const values = (db, c) => [c.title, c.body, c.status, db.boolean(c.isTask), c.startingDate, c.endingDate, c.author, c.project];
 async function getRow(db, id) {
   if (!validId(id)) invalid('Invalid card UUID.');
   const [row] = await db.query(`SELECT ${columns(db)} FROM ${db.table} WHERE id = $1`, [id.toLowerCase()]);
@@ -196,6 +211,19 @@ async function ensureProfile(db, name) {
     `INSERT INTO ${db.profilesTable} (name, role, color) VALUES ($1, $2, $3) ON CONFLICT (name) DO NOTHING`,
     [name, '', defaultColorFor(name)],
   );
+}
+async function ensureProject(db, name) {
+  if (!name) return null;
+  const [existing] = await db.query(
+    `SELECT name FROM ${db.projectsTable} WHERE lower(name) = lower($1)`,
+    [name],
+  );
+  if (existing) return existing.name;
+  await db.query(
+    `INSERT INTO ${db.projectsTable} (name) VALUES ($1) ON CONFLICT (name) DO NOTHING`,
+    [name],
+  );
+  return name;
 }
 export async function cardExists(id) {
   if (!validId(id)) return false;
@@ -247,7 +275,7 @@ function neonErrorDiagnostic(err) {
     message: 'Glamp encountered a Neon database error. Check the Vercel database connection and that sql/schema.sql has been applied.',
   };
 }
-function handleDbError(err, _req, res, next) {
+export function handleDbError(err, _req, res, next) {
   if (err.name === 'NeonDbError') {
     const diag = neonErrorDiagnostic(err);
     console.error('Glamp cards database error:', diag.tag);
@@ -264,6 +292,7 @@ cardsRouter.get('/', async (req, res) => {
   const q = req.query.q ?? '';
   checkText(q, 'q', 200);
   const authorFilter = req.query.author === undefined ? null : checkAuthor(String(req.query.author), 'author', false);
+  const projectFilter = req.query.project === undefined ? null : checkAuthor(String(req.query.project), 'project', false);
   const db = await initStore();
   const term = q.trim();
   // No LIKE patterns, regexes or full-text syntax: all punctuation is literal.
@@ -283,6 +312,10 @@ cardsRouter.get('/', async (req, res) => {
     const target = authorFilter.toLowerCase();
     cards = cards.filter(c => c.contributors.some(name => name.toLowerCase() === target));
   }
+  if (projectFilter) {
+    const target = projectFilter.toLowerCase();
+    cards = cards.filter(c => (c.project || '').toLowerCase() === target);
+  }
   res.json({ cards });
 });
 cardsRouter.get('/:id', async (req, res) => {
@@ -296,10 +329,12 @@ cardsRouter.post('/', parseJson, async (req, res) => {
   const card = { ...defaults, ...changes(req.body) };
   if (!card.title) invalid('A nonblank title is required.');
   if (!card.author) card.author = headerAuthor(req);
+  if (!card.project) card.project = headerProject(req);
   checkRange(card);
   const db = await initStore();
-  const [row] = await db.query(`INSERT INTO ${db.table} (id, title, body, status, is_task, starting_date, ending_date, author)
-    VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING ${columns(db)}`, [randomUUID(), ...values(db, card)]);
+  if (card.project) card.project = await ensureProject(db, card.project);
+  const [row] = await db.query(`INSERT INTO ${db.table} (id, title, body, status, is_task, starting_date, ending_date, author, project)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING ${columns(db)}`, [randomUUID(), ...values(db, card)]);
   await ensureProfile(db, row.author);
   const saved = toCard(row, []);
   if (saved.status === 'review') await notifyReview(req, saved);
@@ -308,6 +343,7 @@ cardsRouter.post('/', parseJson, async (req, res) => {
 cardsRouter.patch('/:id', parseJson, async (req, res) => {
   const edit = changes(req.body);
   const db = await initStore();
+  if (edit.project) edit.project = await ensureProject(db, edit.project);
   // Compare-and-swap protects merged date validation, unrelated edits and the
   // old status used for notification, including across serverless instances.
   for (let attempt = 0; attempt < 5; attempt++) {
@@ -315,8 +351,8 @@ cardsRouter.patch('/:id', parseJson, async (req, res) => {
     const card = { ...toCard(old), ...edit };
     checkRange(card);
     const [row] = await db.query(`UPDATE ${db.table} SET title = $1, body = $2, status = $3, is_task = $4,
-      starting_date = $5, ending_date = $6, author = $7, updated_at = ${db.now}, revision = revision + 1
-      WHERE id = $8 AND revision = $9 RETURNING ${columns(db)}`, [...values(db, card), old.id, old.revision]);
+      starting_date = $5, ending_date = $6, author = $7, project = $8, updated_at = ${db.now}, revision = revision + 1
+      WHERE id = $9 AND revision = $10 RETURNING ${columns(db)}`, [...values(db, card), old.id, old.revision]);
     if (!row) continue;
     await ensureProfile(db, row.author);
     const authors = await commentAuthorsFor(db, row.id);
@@ -436,3 +472,47 @@ async function saveProfile(req, res, explicitName) {
 agentsRouter.post('/', parseJson, (req, res) => saveProfile(req, res));
 agentsRouter.put('/:name', parseJson, (req, res) => saveProfile(req, res, req.params.name));
 agentsRouter.use(handleDbError);
+
+export const projectsRouter = express.Router();
+projectsRouter.get('/', async (_req, res) => {
+  const db = await initStore();
+  const [listed, cards] = await Promise.all([
+    db.query(`SELECT name, created_at FROM ${db.projectsTable}`, []),
+    db.query(`SELECT project, status FROM ${db.table} WHERE project IS NOT NULL`, []),
+  ]);
+  const map = new Map();
+  const touch = (name, createdAt) => {
+    const key = name.toLowerCase();
+    let entry = map.get(key);
+    if (!entry) {
+      entry = { name, cardCount: 0, openCount: 0, createdAt: createdAt ? new Date(createdAt).toISOString() : null };
+      map.set(key, entry);
+    }
+    return entry;
+  };
+  for (const p of listed) touch(p.name, p.created_at);
+  for (const c of cards) {
+    if (!c.project) continue;
+    const entry = touch(c.project, null);
+    entry.cardCount++;
+    if (c.status !== 'done') entry.openCount++;
+  }
+  const projects = [...map.values()].sort((a, b) => a.name.localeCompare(b.name));
+  res.json({ projects });
+});
+projectsRouter.post('/', parseJson, async (req, res) => {
+  if (!req.body || typeof req.body !== 'object' || Array.isArray(req.body)) invalid('Expected a JSON object.');
+  const keys = Object.keys(req.body);
+  if (!keys.length || keys.some(k => k !== 'name')) invalid('Supply only name.');
+  const name = checkAuthor(req.body.name, 'name', true);
+  const db = await initStore();
+  const canonical = await ensureProject(db, name);
+  const [row] = await db.query(`SELECT name, created_at FROM ${db.projectsTable} WHERE name = $1`, [canonical]);
+  res.status(201).json({
+    project: {
+      name: row.name,
+      createdAt: new Date(row.created_at).toISOString(),
+    },
+  });
+});
+projectsRouter.use(handleDbError);
