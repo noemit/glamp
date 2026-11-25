@@ -1,10 +1,12 @@
 import { databaseUrl } from './database-url.mjs';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { mkdir, open } from 'node:fs/promises';
 import path from 'node:path';
 import express from 'express';
 
-const defaults = { body: '', status: 'open', isTask: false, startingDate: null, endingDate: null, author: null, project: null };
+const ownerOnly = (req, res, next) => req.role === 'owner' ? next() : res.status(403).json({ error: 'Owner session required.' });
+
+const defaults = { body: '', status: 'open', isTask: false, startingDate: null, endingDate: null, author: null, assignee: null, project: null };
 const editable = new Set(['title', ...Object.keys(defaults)]);
 const agentColors = ['slate', 'sky', 'green', 'amber', 'rose', 'teal'];
 const uuid = /^[a-f\d]{8}-(?:[a-f\d]{4}-){3}[a-f\d]{12}$/i;
@@ -33,6 +35,21 @@ function checkAuthor(value, name = 'author', required = false) {
     return null;
   }
   return trimmed;
+}
+function checkAssignee(value, name = 'assignee') {
+  if (value === null || value === undefined) return null;
+  checkText(value, name, 61);
+  if (/[\x00-\x1f\x7f]/u.test(value)) invalid(`${name} cannot contain control characters.`);
+  const trimmed = value.trim().replace(/^@+/, '').trim();
+  if (!trimmed) return null;
+  if ([...trimmed].length > 60) invalid(`${name} must be text of at most 60 characters.`);
+  return trimmed;
+}
+function checkTimestamp(value, name = 'updatedSince') {
+  checkText(value, name, 64);
+  const ms = Date.parse(value.trim());
+  if (!Number.isFinite(ms)) invalid(`${name} must be a valid ISO-8601 timestamp.`);
+  return ms;
 }
 function headerAuthor(req) {
   const raw = req.get('x-agent-name');
@@ -71,6 +88,7 @@ function changes(input) {
   if (Object.hasOwn(result, 'status') && !['open', 'review', 'done'].includes(result.status)) invalid('Invalid status.');
   if (Object.hasOwn(result, 'isTask') && typeof result.isTask !== 'boolean') invalid('isTask must be boolean.');
   if (Object.hasOwn(result, 'author')) result.author = checkAuthor(result.author, 'author', false);
+  if (Object.hasOwn(result, 'assignee')) result.assignee = checkAssignee(result.assignee, 'assignee');
   if (Object.hasOwn(result, 'project')) result.project = checkAuthor(result.project, 'project', false);
   for (const name of ['startingDate', 'endingDate']) if (Object.hasOwn(result, name)) checkDate(result[name], name);
   return result;
@@ -89,7 +107,8 @@ async function openStore() {
     return {
       query: (statement, params) => sql.query(statement, params),
       dates: "to_char(starting_date, 'YYYY-MM-DD') AS starting_date, to_char(ending_date, 'YYYY-MM-DD') AS ending_date",
-      table: 'glamp.cards', commentsTable: 'glamp.card_comments', profilesTable: 'glamp.agent_profiles', projectsTable: 'glamp.projects',
+      table: 'glamp.cards', commentsTable: 'glamp.card_comments', profilesTable: 'glamp.agent_profiles',
+      projectsTable: 'glamp.projects', tokensTable: 'glamp.agent_tokens',
       contains: 'strpos', now: 'statement_timestamp()', boolean: value => value,
     };
   }
@@ -117,6 +136,7 @@ async function openStore() {
         body TEXT NOT NULL CHECK (length(body) <= 20000), status TEXT NOT NULL CHECK (status IN ('open','review','done')),
         is_task INTEGER NOT NULL CHECK (is_task IN (0,1)), starting_date TEXT, ending_date TEXT,
         author TEXT CHECK (author IS NULL OR length(author) BETWEEN 1 AND 60),
+        assignee TEXT CHECK (assignee IS NULL OR length(assignee) BETWEEN 1 AND 60),
         project TEXT CHECK (project IS NULL OR length(project) BETWEEN 1 AND 60),
         created_at TEXT NOT NULL DEFAULT (${now}), updated_at TEXT NOT NULL DEFAULT (${now}),
         revision INTEGER NOT NULL DEFAULT 0, CHECK (starting_date <= ending_date)
@@ -127,6 +147,15 @@ async function openStore() {
         role TEXT NOT NULL DEFAULT '' CHECK (length(role) <= 120),
         color TEXT NOT NULL DEFAULT 'slate' CHECK (color IN ('slate','sky','green','amber','rose','teal')),
         updated_at TEXT NOT NULL DEFAULT (${now})
+      ) STRICT;
+      CREATE TABLE IF NOT EXISTS agent_tokens (
+        id TEXT PRIMARY KEY,
+        agent_name TEXT NOT NULL CHECK (length(agent_name) BETWEEN 1 AND 60),
+        token_hash TEXT NOT NULL UNIQUE,
+        token_prefix TEXT NOT NULL CHECK (length(token_prefix) BETWEEN 1 AND 20),
+        created_at TEXT NOT NULL DEFAULT (${now}),
+        last_used_at TEXT,
+        revoked_at TEXT
       ) STRICT;
       CREATE TABLE IF NOT EXISTS card_comments (
         id TEXT PRIMARY KEY,
@@ -139,6 +168,9 @@ async function openStore() {
     const cols = db.prepare('PRAGMA table_info(cards)').all();
     if (!cols.some(c => c.name === 'author')) {
       db.exec('ALTER TABLE cards ADD COLUMN author TEXT;');
+    }
+    if (!cols.some(c => c.name === 'assignee')) {
+      db.exec('ALTER TABLE cards ADD COLUMN assignee TEXT;');
     }
     if (!cols.some(c => c.name === 'project')) {
       db.exec('ALTER TABLE cards ADD COLUMN project TEXT;');
@@ -155,14 +187,15 @@ async function openStore() {
       return db.prepare(statement).all(bindings);
     },
     dates: 'starting_date, ending_date', table: 'cards', commentsTable: 'card_comments',
-    profilesTable: 'agent_profiles', projectsTable: 'projects', contains: 'instr', now, boolean: Number,
+    profilesTable: 'agent_profiles', projectsTable: 'projects', tokensTable: 'agent_tokens',
+    contains: 'instr', now, boolean: Number,
   };
 }
 let store;
 export function initStore() {
   return store ??= openStore().catch(err => { store = undefined; throw err; });
 }
-const columns = db => `id, title, body, status, is_task, ${db.dates}, author, project, created_at, updated_at, revision`;
+const columns = db => `id, title, body, status, is_task, ${db.dates}, author, assignee, project, created_at, updated_at, revision`;
 function uniqueContributors(cardAuthor, commentAuthors = []) {
   const seen = new Set();
   const list = [];
@@ -179,7 +212,7 @@ function toCard(row, commentAuthors = []) {
   return {
     id: row.id, title: row.title, body: row.body, status: row.status, isTask: Boolean(row.is_task),
     startingDate: row.starting_date, endingDate: row.ending_date, author: row.author ?? null,
-    project: row.project ?? null,
+    assignee: row.assignee ?? null, project: row.project ?? null,
     contributors: uniqueContributors(row.author ?? null, commentAuthors),
     commentCount: commentAuthors.length,
     createdAt: new Date(row.created_at).toISOString(), updatedAt: new Date(row.updated_at).toISOString(),
@@ -191,7 +224,7 @@ function toComment(row) {
     createdAt: new Date(row.created_at).toISOString(),
   };
 }
-const values = (db, c) => [c.title, c.body, c.status, db.boolean(c.isTask), c.startingDate, c.endingDate, c.author, c.project];
+const values = (db, c) => [c.title, c.body, c.status, db.boolean(c.isTask), c.startingDate, c.endingDate, c.author, c.assignee, c.project];
 async function getRow(db, id) {
   if (!validId(id)) invalid('Invalid card UUID.');
   const [row] = await db.query(`SELECT ${columns(db)} FROM ${db.table} WHERE id = $1`, [id.toLowerCase()]);
@@ -230,6 +263,24 @@ export async function cardExists(id) {
   const db = await initStore();
   const rows = await db.query(`SELECT 1 FROM ${db.table} WHERE id = $1`, [id.toLowerCase()]);
   return rows.length !== 0;
+}
+export async function lookupAgentToken(token) {
+  if (typeof token !== 'string' || !token) return null;
+  try {
+    const db = await initStore();
+    const hash = createHash('sha256').update(token).digest('hex');
+    const [row] = await db.query(
+      `SELECT id, agent_name FROM ${db.tokensTable} WHERE token_hash = $1 AND revoked_at IS NULL`,
+      [hash],
+    );
+    if (!row) return null;
+    try {
+      await db.query(`UPDATE ${db.tokensTable} SET last_used_at = ${db.now} WHERE id = $1`, [row.id]);
+    } catch { /* non-fatal timestamp touch */ }
+    return { id: row.id, agentName: row.agent_name };
+  } catch {
+    return null;
+  }
 }
 async function notifyReview(req, card) {
   // Await the hook so serverless runtimes don't freeze it after the response.
@@ -292,7 +343,11 @@ cardsRouter.get('/', async (req, res) => {
   const q = req.query.q ?? '';
   checkText(q, 'q', 200);
   const authorFilter = req.query.author === undefined ? null : checkAuthor(String(req.query.author), 'author', false);
+  const assigneeFilter = req.query.assignee === undefined ? null : checkAssignee(String(req.query.assignee), 'assignee');
   const projectFilter = req.query.project === undefined ? null : checkAuthor(String(req.query.project), 'project', false);
+  const sinceMs = req.query.updatedSince === undefined || !String(req.query.updatedSince).trim()
+    ? null
+    : checkTimestamp(String(req.query.updatedSince), 'updatedSince');
   const db = await initStore();
   const term = q.trim();
   // No LIKE patterns, regexes or full-text syntax: all punctuation is literal.
@@ -312,9 +367,16 @@ cardsRouter.get('/', async (req, res) => {
     const target = authorFilter.toLowerCase();
     cards = cards.filter(c => c.contributors.some(name => name.toLowerCase() === target));
   }
+  if (assigneeFilter) {
+    const target = assigneeFilter.toLowerCase();
+    cards = cards.filter(c => (c.assignee || '').toLowerCase() === target);
+  }
   if (projectFilter) {
     const target = projectFilter.toLowerCase();
     cards = cards.filter(c => (c.project || '').toLowerCase() === target);
+  }
+  if (sinceMs !== null) {
+    cards = cards.filter(c => Date.parse(c.updatedAt) > sinceMs);
   }
   res.json({ cards });
 });
@@ -328,13 +390,14 @@ const parseJson = express.json({ limit: '128kb' });
 cardsRouter.post('/', parseJson, async (req, res) => {
   const card = { ...defaults, ...changes(req.body) };
   if (!card.title) invalid('A nonblank title is required.');
-  if (!card.author) card.author = headerAuthor(req);
+  if (req.agentName) card.author = req.agentName;
+  else if (!card.author) card.author = headerAuthor(req);
   if (!card.project) card.project = headerProject(req);
   checkRange(card);
   const db = await initStore();
   if (card.project) card.project = await ensureProject(db, card.project);
-  const [row] = await db.query(`INSERT INTO ${db.table} (id, title, body, status, is_task, starting_date, ending_date, author, project)
-    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING ${columns(db)}`, [randomUUID(), ...values(db, card)]);
+  const [row] = await db.query(`INSERT INTO ${db.table} (id, title, body, status, is_task, starting_date, ending_date, author, assignee, project)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING ${columns(db)}`, [randomUUID(), ...values(db, card)]);
   await ensureProfile(db, row.author);
   const saved = toCard(row, []);
   if (saved.status === 'review') await notifyReview(req, saved);
@@ -351,8 +414,8 @@ cardsRouter.patch('/:id', parseJson, async (req, res) => {
     const card = { ...toCard(old), ...edit };
     checkRange(card);
     const [row] = await db.query(`UPDATE ${db.table} SET title = $1, body = $2, status = $3, is_task = $4,
-      starting_date = $5, ending_date = $6, author = $7, project = $8, updated_at = ${db.now}, revision = revision + 1
-      WHERE id = $9 AND revision = $10 RETURNING ${columns(db)}`, [...values(db, card), old.id, old.revision]);
+      starting_date = $5, ending_date = $6, author = $7, assignee = $8, project = $9, updated_at = ${db.now}, revision = revision + 1
+      WHERE id = $10 AND revision = $11 RETURNING ${columns(db)}`, [...values(db, card), old.id, old.revision]);
     if (!row) continue;
     await ensureProfile(db, row.author);
     const authors = await commentAuthorsFor(db, row.id);
@@ -380,7 +443,7 @@ cardsRouter.post('/:id/comments', parseJson, async (req, res) => {
   const body = req.body.body.trim();
   if (!body) invalid('A nonblank comment body is required.');
   const suppliedAuthor = Object.hasOwn(req.body, 'author') ? checkAuthor(req.body.author, 'author', false) : headerAuthor(req);
-  const author = suppliedAuthor || (req.role === 'owner' ? 'Owner' : null);
+  const author = req.agentName || suppliedAuthor || (req.role === 'owner' ? 'Owner' : null);
   if (!author) invalid('Provide an author name in body.author or the X-Agent-Name header.');
   const db = await initStore();
   const card = await getRow(db, req.params.id);
@@ -389,25 +452,34 @@ cardsRouter.post('/:id/comments', parseJson, async (req, res) => {
      RETURNING id, card_id, author, body, created_at`,
     [randomUUID(), card.id, author, body],
   );
+  await db.query(`UPDATE ${db.table} SET updated_at = ${db.now} WHERE id = $1`, [card.id]);
   await ensureProfile(db, author);
   res.status(201).json({ comment: toComment(row) });
 });
 cardsRouter.use(handleDbError);
 
 export const agentsRouter = express.Router();
-agentsRouter.get('/', async (_req, res) => {
+agentsRouter.get('/', async (req, res) => {
   const db = await initStore();
-  const [profiles, cards, comments] = await Promise.all([
+  const isOwner = req.role === 'owner';
+  const [profiles, cards, comments, tokens] = await Promise.all([
     db.query(`SELECT name, role, color, updated_at FROM ${db.profilesTable}`, []),
-    db.query(`SELECT author, updated_at FROM ${db.table} WHERE author IS NOT NULL`, []),
+    db.query(`SELECT author, assignee, updated_at FROM ${db.table} WHERE author IS NOT NULL OR assignee IS NOT NULL`, []),
     db.query(`SELECT author, created_at FROM ${db.commentsTable}`, []),
+    isOwner
+      ? db.query(`SELECT id, agent_name, token_prefix, created_at, last_used_at FROM ${db.tokensTable} WHERE revoked_at IS NULL ORDER BY created_at DESC`, [])
+      : Promise.resolve([]),
   ]);
   const map = new Map();
   const touch = (name, stamp) => {
     const key = name.toLowerCase();
     let entry = map.get(key);
     if (!entry) {
-      entry = { name, role: '', color: defaultColorFor(name), cardCount: 0, commentCount: 0, lastActiveAt: null };
+      entry = {
+        name, role: '', color: defaultColorFor(name),
+        cardCount: 0, commentCount: 0, assignedCount: 0, lastActiveAt: null,
+        ...(isOwner ? { tokens: [] } : {}),
+      };
       map.set(key, entry);
     }
     if (stamp) {
@@ -422,23 +494,54 @@ agentsRouter.get('/', async (_req, res) => {
     entry.color = agentColors.includes(p.color) ? p.color : defaultColorFor(p.name);
   }
   for (const c of cards) {
-    if (!c.author) continue;
-    touch(c.author, c.updated_at).cardCount++;
+    if (c.author) touch(c.author, c.updated_at).cardCount++;
+    if (c.assignee) touch(c.assignee, c.updated_at).assignedCount++;
   }
   for (const cm of comments) {
-    if (!cm.author) continue;
-    touch(cm.author, cm.created_at).commentCount++;
+    if (cm.author) touch(cm.author, cm.created_at).commentCount++;
+  }
+  if (isOwner) {
+    for (const t of tokens) {
+      const entry = touch(t.agent_name, t.last_used_at || t.created_at);
+      entry.tokens.push({
+        id: t.id,
+        prefix: t.token_prefix,
+        createdAt: new Date(t.created_at).toISOString(),
+        lastUsedAt: t.last_used_at ? new Date(t.last_used_at).toISOString() : null,
+      });
+    }
   }
   const agents = [...map.values()].sort((a, b) =>
-    (b.cardCount + b.commentCount) - (a.cardCount + a.commentCount) || a.name.localeCompare(b.name),
+    (b.cardCount + b.commentCount + b.assignedCount) - (a.cardCount + a.commentCount + a.assignedCount) ||
+    a.name.localeCompare(b.name),
   );
   res.json({ agents });
 });
+async function upsertProfile(db, { name, role, color }) {
+  const [existing] = await db.query(`SELECT name, role, color FROM ${db.profilesTable} WHERE lower(name) = lower($1)`, [name]);
+  const finalName = existing ? existing.name : name;
+  const finalRole = role ?? existing?.role ?? '';
+  const finalColor = color ?? existing?.color ?? defaultColorFor(finalName);
+  const [row] = await db.query(
+    `INSERT INTO ${db.profilesTable} (name, role, color, updated_at) VALUES ($1, $2, $3, ${db.now})
+     ON CONFLICT (name) DO UPDATE SET role = EXCLUDED.role, color = EXCLUDED.color, updated_at = ${db.now}
+     RETURNING name, role, color, updated_at`,
+    [finalName, finalRole, finalColor],
+  );
+  return {
+    name: row.name, role: row.role, color: row.color,
+    updatedAt: new Date(row.updated_at).toISOString(),
+  };
+}
 async function saveProfile(req, res, explicitName) {
   if (!req.body || typeof req.body !== 'object' || Array.isArray(req.body)) invalid('Expected a JSON object.');
   const allowed = new Set(['name', 'role', 'color']);
   if (Object.keys(req.body).some(k => !allowed.has(k))) invalid('Supply only name, role, and color.');
-  const name = checkAuthor(explicitName ?? req.body.name ?? req.get('x-agent-name'), 'name', true);
+  const requested = checkAuthor(explicitName ?? req.body.name ?? req.agentName ?? req.get('x-agent-name'), 'name', true);
+  if (req.agentName && requested.toLowerCase() !== req.agentName.toLowerCase()) {
+    throw new CardError(403, 'Agents can only update their own profile.');
+  }
+  const name = req.agentName || requested;
   let role;
   if (Object.hasOwn(req.body, 'role')) {
     checkText(req.body.role, 'role', 120);
@@ -452,23 +555,57 @@ async function saveProfile(req, res, explicitName) {
     color = req.body.color;
   }
   const db = await initStore();
-  const [existing] = await db.query(`SELECT name, role, color FROM ${db.profilesTable} WHERE lower(name) = lower($1)`, [name]);
-  const finalName = existing ? existing.name : name;
-  const finalRole = role ?? existing?.role ?? '';
-  const finalColor = color ?? existing?.color ?? defaultColorFor(finalName);
+  const agent = await upsertProfile(db, { name, role, color });
+  res.json({ agent });
+}
+agentsRouter.post('/tokens', ownerOnly, parseJson, async (req, res) => {
+  if (!req.body || typeof req.body !== 'object' || Array.isArray(req.body)) invalid('Expected a JSON object.');
+  const allowed = new Set(['name', 'role', 'color']);
+  if (Object.keys(req.body).some(k => !allowed.has(k))) invalid('Supply only name, role, and color.');
+  const name = checkAuthor(req.body.name, 'name', true);
+  if (name.toLowerCase() === 'owner') invalid('Choose an agent name other than Owner.');
+  let role;
+  if (Object.hasOwn(req.body, 'role')) {
+    checkText(req.body.role, 'role', 120);
+    role = req.body.role.trim();
+  }
+  let color;
+  if (Object.hasOwn(req.body, 'color')) {
+    if (typeof req.body.color !== 'string' || !agentColors.includes(req.body.color)) {
+      invalid(`color must be one of: ${agentColors.join(', ')}.`);
+    }
+    color = req.body.color;
+  }
+  const db = await initStore();
+  const agent = await upsertProfile(db, { name, role, color });
+  const rawToken = `glamp_${randomBytes(24).toString('base64url')}`;
+  const hash = createHash('sha256').update(rawToken).digest('hex');
+  const prefix = rawToken.slice(0, 12);
   const [row] = await db.query(
-    `INSERT INTO ${db.profilesTable} (name, role, color, updated_at) VALUES ($1, $2, $3, ${db.now})
-     ON CONFLICT (name) DO UPDATE SET role = EXCLUDED.role, color = EXCLUDED.color, updated_at = ${db.now}
-     RETURNING name, role, color, updated_at`,
-    [finalName, finalRole, finalColor],
+    `INSERT INTO ${db.tokensTable} (id, agent_name, token_hash, token_prefix)
+     VALUES ($1, $2, $3, $4) RETURNING id, token_prefix, created_at`,
+    [randomUUID(), agent.name, hash, prefix],
   );
-  res.json({
-    agent: {
-      name: row.name, role: row.role, color: row.color,
-      updatedAt: new Date(row.updated_at).toISOString(),
+  res.status(201).json({
+    agent,
+    token: rawToken,
+    tokenInfo: {
+      id: row.id,
+      prefix: row.token_prefix,
+      createdAt: new Date(row.created_at).toISOString(),
     },
   });
-}
+});
+agentsRouter.delete('/tokens/:id', ownerOnly, async (req, res) => {
+  if (!validId(req.params.id)) invalid('Invalid token UUID.');
+  const db = await initStore();
+  const rows = await db.query(
+    `UPDATE ${db.tokensTable} SET revoked_at = ${db.now} WHERE id = $1 AND revoked_at IS NULL RETURNING id`,
+    [req.params.id.toLowerCase()],
+  );
+  if (!rows.length) throw new CardError(404, 'Token not found.');
+  res.status(204).end();
+});
 agentsRouter.post('/', parseJson, (req, res) => saveProfile(req, res));
 agentsRouter.put('/:name', parseJson, (req, res) => saveProfile(req, res, req.params.name));
 agentsRouter.use(handleDbError);

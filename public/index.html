@@ -8,7 +8,10 @@
     <title>Glamp · Notes</title>
     <link rel="manifest" href="/manifest.webmanifest" />
     <link rel="icon" href="/icons/glamp.svg" type="image/svg+xml" />
-    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
+    <link rel="icon" href="/icons/favicon-32.png" sizes="32x32" type="image/png" />
+    <link rel="apple-touch-icon" sizes="180x180" href="/icons/apple-touch-icon.png" />
+    <meta name="apple-mobile-web-app-title" content="Glamp" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
     <link rel="stylesheet" href="/style.css" />
     <script type="module" src="/app.js"></script>
   </head>
@@ -72,15 +75,19 @@
         <path d="M2.5 12s3.8-6.5 9.5-6.5S21.5 12 21.5 12s-3.8 6.5-9.5 6.5S2.5 12 2.5 12Z" />
         <circle cx="12" cy="12" r="2.5" />
       </symbol>
+      <symbol id="i-users" viewBox="0 0 24 24">
+        <circle cx="9.5" cy="8.5" r="3.2" />
+        <path d="M3.5 19a6 6 0 0 1 12 0" />
+        <circle cx="17" cy="9.5" r="2.4" />
+        <path d="M16.5 19h4.5a4.5 4.5 0 0 0-3.5-4.4" />
+      </symbol>
     </svg>
 
     <header class="masthead">
       <div class="shell mast-inner">
         <div class="brand-group">
           <div class="brand">
-            <span class="brand-mark">
-              <svg class="icon" aria-hidden="true"><use href="#i-tent" /></svg>
-            </span>
+            <img class="brand-logo" src="/icons/glamp.svg" alt="" width="28" height="28" />
             <span class="brand-name">Glamp</span>
           </div>
           <div id="project-switcher" class="project-switcher" hidden>
@@ -114,6 +121,9 @@
           <svg class="icon" aria-hidden="true"><use href="#i-lock" /></svg> Private
         </span>
         <div id="account" class="header-right" hidden>
+          <button id="manage-agents" class="btn ghost" type="button">
+            <svg class="icon" aria-hidden="true"><use href="#i-users" /></svg><span>Agents</span>
+          </button>
           <button id="push" class="btn ghost" type="button">
             <svg class="icon" aria-hidden="true"><use href="#i-bell" /></svg><span>Enable push</span>
           </button>
@@ -131,9 +141,7 @@
       <section id="gate" class="gate" hidden aria-labelledby="gate-title">
         <div class="gate-card">
           <div class="gate-badge">
-            <span class="brand-mark large">
-              <svg class="icon" aria-hidden="true"><use href="#i-tent" /></svg>
-            </span>
+            <img class="brand-logo large" src="/icons/glamp.svg" alt="" width="54" height="54" />
           </div>
           <span class="pill-tag">Owner access</span>
           <h1 id="gate-title">Sign in to Glamp</h1>
@@ -225,7 +233,7 @@
     </main>
 
     <footer class="shell colophon">
-      <span><svg class="icon" aria-hidden="true"><use href="#i-tent" /></svg> Glamp</span>
+      <span><img class="brand-logo small" src="/icons/glamp.svg" alt="" width="16" height="16" /> Glamp</span>
       <span class="colophon-note">Notes, plans &amp; to-dos</span>
     </footer>
 

@@ -51,16 +51,33 @@ test('private workspace: agent submits a plan; owner reviews it; agent sees Done
   assert.match(complete.headers.get('cache-control'),/no-store/);
   process.env.GLAMP_AGENT_TOKEN_HASHES = '';
   assert.equal((await req(url,'GET',undefined,auth)).status,401);
-  // Plain GLAMP_AGENT_TOKEN password (15+ chars) works for agent API routes without granting owner access.
-  process.env.GLAMP_AGENT_TOKEN = 'too-short-14ch';
-  assert.equal((await req(url,'GET',undefined,{authorization:'Bearer too-short-14ch'})).status,401);
-  const agentPassword = 'shared-agent-password-2026';
-  process.env.GLAMP_AGENT_TOKEN = agentPassword;
-  assert.equal((await req(url,'GET',undefined,{authorization:`Bearer ${agentPassword}`})).status,200);
-  assert.equal((await req('/api/session','POST',{token:agentPassword})).status,401);
-  assert.equal((await req('/api/push/anything','GET',undefined,{authorization:`Bearer ${agentPassword}`})).status,403);
-  delete process.env.GLAMP_AGENT_TOKEN;
-  assert.equal((await req(url,'GET',undefined,{authorization:`Bearer ${agentPassword}`})).status,401);
+
+  // Per-bot DB tokens created by the owner: bound identity, cannot spoof, instant revoke.
+  const createdTok = await req('/api/agents/tokens','POST',{name:'growth',role:'Growth & SEO',color:'teal'},{cookie});
+  assert.equal(createdTok.status,201);
+  const { token: botToken, tokenInfo } = await createdTok.json();
+  assert.match(botToken, /^glamp_/);
+  const botAuth = { authorization: `Bearer ${botToken}` };
+  // Bot cannot sign into owner session, touch push, or mint tokens
+  assert.equal((await req('/api/session','POST',{token:botToken})).status,401);
+  assert.equal((await req('/api/push/anything','GET',undefined,botAuth)).status,403);
+  assert.equal((await req('/api/agents/tokens','POST',{name:'other'},botAuth)).status,403);
+  // Bot identity is bound to its token and cannot be spoofed via body.author or X-Agent-Name
+  const botCardRes = await req('/api/cards','POST',{title:'Growth ideas',author:'Owner',assignee:'@growth'},{...botAuth,'x-agent-name':'FakeBot'});
+  assert.equal(botCardRes.status,201);
+  const { card: botCard } = await botCardRes.json();
+  assert.equal(botCard.author,'growth');
+  assert.equal(botCard.assignee,'growth');
+  const botCommentRes = await req(`/api/cards/${botCard.id}/comments`,'POST',{body:'Checking in',author:'Owner'},botAuth);
+  assert.equal(botCommentRes.status,201);
+  assert.equal((await botCommentRes.json()).comment.author,'growth');
+  // Bot can update its own profile, but not another agent's
+  assert.equal((await req('/api/agents','POST',{role:'SEO & Content'},botAuth)).status,200);
+  assert.equal((await req('/api/agents/scout','PUT',{role:'Hijacked'},botAuth)).status,403);
+  // Instant revocation via owner DELETE
+  assert.equal((await req(`/api/agents/tokens/${tokenInfo.id}`,'DELETE',undefined,{cookie})).status,204);
+  assert.equal((await req('/api/cards','GET',undefined,botAuth)).status,401);
+
   process.env.GLAMP_OWNER_TOKEN = randomBytes(32).toString('hex');
   assert.equal((await req(url,'GET',undefined,{cookie})).status,401);
 });

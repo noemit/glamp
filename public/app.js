@@ -249,6 +249,9 @@ function syncAgentOptions() {
     for (const name of card.contributors || (card.author ? [card.author] : [])) {
       if (!names.has(name.toLowerCase())) names.set(name.toLowerCase(), name);
     }
+    if (card.assignee && !names.has(card.assignee.toLowerCase())) {
+      names.set(card.assignee.toLowerCase(), card.assignee);
+    }
   }
   const sorted = [...names.values()].sort((a, b) => a.localeCompare(b));
   const current = state.filters.agent;
@@ -434,6 +437,7 @@ $('project-select').addEventListener('change', (e) => {
   render();
 });
 $('new-project').addEventListener('click', () => showNewProject());
+$('manage-agents').addEventListener('click', () => showAgentsManager());
 
 // Filter chips
 $('filter-type').addEventListener('change', (e) => {
@@ -546,7 +550,8 @@ function applyFilters(cards) {
     if (state.filters.time !== 'all' && cardTimeBucket(card, now) !== state.filters.time) return false;
     if (state.filters.agent !== 'all') {
       const members = card.contributors || (card.author ? [card.author] : []);
-      if (!members.some((name) => name.toLowerCase() === state.filters.agent)) return false;
+      const assignedMatch = (card.assignee || '').toLowerCase() === state.filters.agent;
+      if (!assignedMatch && !members.some((name) => name.toLowerCase() === state.filters.agent)) return false;
     }
     return true;
   });
@@ -664,6 +669,9 @@ function docsView(cards) {
     if (card.project && state.project === 'all') {
       pills.append(node('span', 'pill project-tag', card.project));
     }
+    if (card.assignee) {
+      pills.append(node('span', 'pill assignee-tag', `@${card.assignee}`));
+    }
     const tp = timePill(card);
     if (tp) pills.append(tp);
     pills.append(badge(card.status));
@@ -742,9 +750,10 @@ function boardView(cards) {
       const item = node('article', 'lane-card');
       const top = node('div', 'lane-card-top');
       top.append(node('span', `pill ${card.isTask ? 'kind-task' : 'kind-note'}`, card.isTask ? 'Task' : 'Note'));
+      if (card.assignee) top.append(node('span', 'pill assignee-tag', `@${card.assignee}`));
       const tp = timePill(card);
       if (tp) top.append(tp);
-      else top.append(node('span', 'card-date', displayDate(new Date(card.createdAt))));
+      else if (!card.assignee) top.append(node('span', 'card-date', displayDate(new Date(card.createdAt))));
 
       const { snippet } = parseBodyPreview(card);
       item.append(top, cardLink(card), node('p', 'snippet', snippet || 'No notes yet.'));
@@ -877,6 +886,7 @@ function todoView(cards) {
     body.append(cardLink(card), node('p', subCls, subText));
 
     const badges = node('div', 'todo-row-badges');
+    if (card.assignee) badges.append(node('span', 'pill assignee-tag', `@${card.assignee}`));
     const tp = timePill(card);
     if (tp) badges.append(tp);
     badges.append(badge(card.status));
@@ -1115,6 +1125,7 @@ function showCard(card) {
     detail = $('detail');
   const top = node('div', 'detail-top');
   if (card.project) top.append(node('span', 'pill project-tag', card.project));
+  if (card.assignee) top.append(node('span', 'pill assignee-tag', `@${card.assignee}`));
   top.append(
     badge(card.status),
     node('span', `pill ${card.isTask ? 'kind-task' : 'kind-note'}`, card.isTask ? 'Task' : 'Note'),
@@ -1380,6 +1391,191 @@ function editorInput(tag, name, value) {
   input.value = value ?? '';
   return input;
 }
+function showAgentsManager(newTokenBanner = null) {
+  const version = ++sheetVersion;
+  sheet('Agents');
+  const detail = $('detail');
+  detail.append(
+    node(
+      'p',
+      'help',
+      'Create a dedicated token for each bot. Cards and comments created with a bot’s token are automatically attributed to that bot, and you can revoke any bot instantly.',
+    ),
+  );
+
+  const bannerWrap = node('div');
+  const renderBanner = (info) => {
+    bannerWrap.replaceChildren();
+    if (!info) return;
+    const box = node('div', 'token-banner');
+    box.append(
+      node('p', 'token-banner-title', `Token created for ${info.agent.name} — copy it now (shown once):`),
+    );
+    const codeInput = node('input', 'token-code');
+    codeInput.readOnly = true;
+    codeInput.value = info.token;
+    codeInput.setAttribute('aria-label', `${info.agent.name} bearer token`);
+    const promptText = `Read ${location.origin}/agent.txt and use GLAMP_TOKEN=${info.token} to check GET ${location.origin}/api/cards?assignee=${encodeURIComponent(info.agent.name)}`;
+    const row = node('div', 'button-row');
+    row.append(
+      button('Copy token', async () => {
+        try {
+          await navigator.clipboard.writeText(info.token);
+          sheetMessage(`Copied token for ${info.agent.name}.`);
+        } catch {
+          codeInput.focus();
+          codeInput.select();
+          sheetMessage('Select and copy the token above.');
+        }
+      }, 'btn sm primary'),
+      button('Copy agent instructions', async () => {
+        try {
+          await navigator.clipboard.writeText(promptText);
+          sheetMessage(`Copied setup prompt for ${info.agent.name}.`);
+        } catch {
+          sheetMessage('Could not access clipboard.');
+        }
+      }, 'btn sm'),
+    );
+    box.append(codeInput, row);
+    bannerWrap.append(box);
+  };
+  renderBanner(newTokenBanner);
+  detail.append(bannerWrap);
+
+  const form = node('form', 'agent-create-form'),
+    fields = node('div', 'fields');
+  const nameInput = editorInput('input', 'agent-name', '');
+  nameInput.required = true;
+  nameInput.maxLength = 60;
+  nameInput.placeholder = 'e.g. growth, scout, planner';
+  const roleInput = editorInput('input', 'agent-role', '');
+  roleInput.maxLength = 120;
+  roleInput.placeholder = 'Optional role (e.g. Growth & SEO)';
+  const colorSelect = editorInput('select', 'agent-color');
+  for (const c of agentColors) {
+    const opt = node('option', '', c[0].toUpperCase() + c.slice(1));
+    opt.value = c;
+    colorSelect.append(opt);
+  }
+  colorSelect.value = 'teal';
+  const topRow = node('div', 'two-col');
+  topRow.append(field('Agent name', nameInput), field('Color', colorSelect));
+  fields.append(topRow, field('Role (optional)', roleInput));
+  const createBtn = node('button', 'btn primary', 'Add agent & create token');
+  createBtn.type = 'submit';
+  form.append(fields, createBtn);
+  detail.append(form);
+
+  const listWrap = node('div', 'agents-list');
+  detail.append(listWrap);
+
+  const loadAgents = async () => {
+    listWrap.replaceChildren(node('p', 'help', 'Loading agents…'));
+    try {
+      const { agents } = await request('/api/agents');
+      if (version !== sheetVersion) return;
+      state.agents = new Map(agents.map((a) => [a.name.toLowerCase(), a]));
+      syncAgentOptions();
+      listWrap.replaceChildren();
+      if (!agents.length) {
+        listWrap.append(node('p', 'help', 'No agents yet. Create one above to generate its token.'));
+        return;
+      }
+      for (const ag of agents) {
+        const card = node('article', 'agent-row');
+        const top = node('div', 'agent-row-top');
+        const ident = node('div', 'agent-identity');
+        const meta = node('div', 'agent-meta');
+        const stats = [
+          ag.role,
+          `${ag.cardCount} cards`,
+          `${ag.assignedCount || 0} assigned`,
+          `${ag.commentCount} comments`,
+        ].filter(Boolean).join(' · ');
+        meta.append(node('span', 'agent-name', ag.name), node('span', 'agent-sub', stats));
+        ident.append(avatarBadge(ag.name, true), meta);
+        const actions = node('div', 'button-row');
+        if (ag.name.toLowerCase() !== 'owner') {
+          actions.append(
+            button('New token', async () => {
+              try {
+                const res = await request('/api/agents/tokens', json('POST', { name: ag.name }));
+                if (version === sheetVersion) {
+                  renderBanner(res);
+                  sheetMessage(`Generated a new token for ${ag.name}.`);
+                  await loadAgents();
+                }
+              } catch (error) {
+                if (error !== stale && version === sheetVersion) sheetMessage(message(error));
+              }
+            }, 'btn sm'),
+          );
+        }
+        top.append(ident, actions);
+        card.append(top);
+
+        if (ag.tokens?.length) {
+          const tokWrap = node('div', 'agent-tokens');
+          for (const tok of ag.tokens) {
+            const row = node('div', 'token-row');
+            const left = node('span', 'row-inline');
+            const used = tok.lastUsedAt
+              ? `Last used ${dateTimeFormat.format(new Date(tok.lastUsedAt))}`
+              : 'Never used yet';
+            left.append(node('span', 'token-prefix', `${tok.prefix}…`), node('span', 'help', ` ${used}`));
+            row.append(
+              left,
+              button('Revoke', async () => {
+                try {
+                  await request(`/api/agents/tokens/${encodeURIComponent(tok.id)}`, { method: 'DELETE' });
+                  if (version === sheetVersion) {
+                    sheetMessage(`Revoked token for ${ag.name}.`);
+                    await loadAgents();
+                  }
+                } catch (error) {
+                  if (error !== stale && version === sheetVersion) sheetMessage(message(error));
+                }
+              }, 'btn sm danger'),
+            );
+            tokWrap.append(row);
+          }
+          card.append(tokWrap);
+        }
+        listWrap.append(card);
+      }
+    } catch (error) {
+      if (error !== stale && version === sheetVersion) {
+        listWrap.replaceChildren(node('p', 'error-text', message(error)));
+      }
+    }
+  };
+
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const name = nameInput.value.trim();
+    if (!name || createBtn.disabled) return;
+    createBtn.disabled = true;
+    sheetMessage('Creating agent token…');
+    try {
+      const payload = { name, color: colorSelect.value };
+      if (roleInput.value.trim()) payload.role = roleInput.value.trim();
+      const res = await request('/api/agents/tokens', json('POST', payload));
+      if (version === sheetVersion) {
+        nameInput.value = '';
+        roleInput.value = '';
+        renderBanner(res);
+        sheetMessage(`Agent ${res.agent.name} is ready.`);
+        await loadAgents();
+      }
+    } catch (error) {
+      if (error !== stale && version === sheetVersion) sheetMessage(message(error));
+    } finally {
+      if (version === sheetVersion) createBtn.disabled = false;
+    }
+  });
+  loadAgents();
+}
 function showNewProject() {
   const version = ++sheetVersion;
   sheet('New project');
@@ -1468,6 +1664,18 @@ function showEditor(card) {
     opt.value = name;
     datalist.append(opt);
   }
+  const assignee = editorInput('input', 'assignee', card?.assignee);
+  assignee.maxLength = 60;
+  assignee.placeholder = 'Optional (e.g. growth, scout, Owner)';
+  assignee.setAttribute('list', 'agent-suggestions');
+  const agentList = node('datalist');
+  agentList.id = 'agent-suggestions';
+  const agentNames = new Set(['Owner', ...[...state.agents.values()].map((a) => a.name)]);
+  for (const name of [...agentNames].sort((a, b) => a.localeCompare(b))) {
+    const opt = node('option');
+    opt.value = name;
+    agentList.append(opt);
+  }
   const author = editorInput('input', 'author', card?.author);
   author.maxLength = 60;
   author.placeholder = 'Optional (e.g. Owner or agent name)';
@@ -1482,9 +1690,9 @@ function showEditor(card) {
   options.append(field('Status', status), type);
   const dates = node('div', 'two-col');
   dates.append(field('Start date (optional)', starting), field('End date (optional)', ending));
-  const attribution = node('div', 'two-col');
-  attribution.append(field('Project (optional)', project), field('Author (optional)', author));
-  fields.append(field('Title', title), bodyField, options, dates, attribution, datalist);
+  const routing = node('div', 'two-col');
+  routing.append(field('Project (optional)', project), field('Assigned to (optional)', assignee));
+  fields.append(field('Title', title), bodyField, options, dates, routing, field('Author (optional)', author), datalist, agentList);
   const buttons = node('div', 'form-bottom'),
     save = node('button', 'btn primary', 'Save card');
   save.type = 'submit';
@@ -1512,6 +1720,7 @@ function showEditor(card) {
       startingDate: starting.value || null,
       endingDate: ending.value || null,
       project: project.value.trim() || null,
+      assignee: assignee.value.trim().replace(/^@+/, '') || null,
       author: author.value.trim() || null,
     };
     // Send only edited fields, so fixing a typo doesn't undo an agent's status change.

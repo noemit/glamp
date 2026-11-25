@@ -87,10 +87,11 @@ describe('cards HTTP contract', { concurrency: false }, () => {
     assert.equal(first.endingDate, null);
     assert.equal(first.status, 'open');
     assert.equal(first.author, null);
+    assert.equal(first.assignee, null);
     assert.equal(first.project, null);
     assert.deepEqual(first.contributors, []);
     assert.equal(first.commentCount, 0);
-    assert.deepEqual(Object.keys(first).sort(), ['id', 'title', 'body', 'isTask', 'status', 'startingDate', 'endingDate', 'author', 'project', 'contributors', 'commentCount', 'createdAt', 'updatedAt'].sort());
+    assert.deepEqual(Object.keys(first).sort(), ['id', 'title', 'body', 'isTask', 'status', 'startingDate', 'endingDate', 'author', 'assignee', 'project', 'contributors', 'commentCount', 'createdAt', 'updatedAt'].sort());
     for (const stamp of [first.createdAt, first.updatedAt]) assert.equal(new Date(stamp).toISOString(), stamp);
     assert.equal(await cardExists(first.id), true);
     assert.deepEqual(await get(first.id), first);
@@ -374,5 +375,36 @@ describe('cards HTTP contract', { concurrency: false }, () => {
     assert.equal(launch.cardCount, 0);
     assert.equal(mobile.cardCount, 1);
     assert.equal(mobile.openCount, 1);
+  });
+
+  it('supports assignee filtering, updatedSince polling, and comment updatedAt bumps', async () => {
+    const first = await create({ title: 'Growth audit', assignee: '@growth' });
+    assert.equal(first.assignee, 'growth');
+    const byAt = await (await fetch(`${base}?assignee=@Growth`)).json();
+    assert.ok(byAt.cards.some(c => c.id === first.id));
+    assert.ok(byAt.cards.every(c => c.assignee === 'growth'));
+
+    // updatedSince after card creation returns empty until something changes
+    const checkpoint = first.updatedAt;
+    const noneYet = await (await fetch(`${base}?assignee=growth&updatedSince=${encodeURIComponent(checkpoint)}`)).json();
+    assert.equal(noneYet.cards.length, 0);
+
+    // Wait briefly so timestamp strictly advances, then post a comment
+    await new Promise(r => setTimeout(r, 15));
+    const commentRes = await fetch(`${base}/${first.id}/comments`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Agent-Name': 'Owner' },
+      body: JSON.stringify({ body: 'Focus on onboarding funnel first.' }),
+    });
+    assert.equal(commentRes.status, 201);
+
+    // Polling with updatedSince now returns the commented card
+    const afterComment = await (await fetch(`${base}?assignee=growth&updatedSince=${encodeURIComponent(checkpoint)}`)).json();
+    assert.equal(afterComment.cards.length, 1);
+    assert.equal(afterComment.cards[0].id, first.id);
+    assert.ok(Date.parse(afterComment.cards[0].updatedAt) > Date.parse(checkpoint));
+
+    // Malformed updatedSince is rejected with 400
+    assert.equal((await fetch(`${base}?updatedSince=not-a-date`)).status, 400);
   });
 });

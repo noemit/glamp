@@ -18,6 +18,7 @@ CREATE TABLE IF NOT EXISTS glamp.cards (
   starting_date date CHECK (starting_date BETWEEN DATE '0001-01-01' AND DATE '9999-12-31'),
   ending_date date CHECK (ending_date BETWEEN DATE '0001-01-01' AND DATE '9999-12-31'),
   author text CHECK (author IS NULL OR (char_length(author) BETWEEN 1 AND 60 AND btrim(author) <> '')),
+  assignee text CHECK (assignee IS NULL OR (char_length(assignee) BETWEEN 1 AND 60 AND btrim(assignee) <> '')),
   project text CHECK (project IS NULL OR (char_length(project) BETWEEN 1 AND 60 AND btrim(project) <> '')),
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now(),
@@ -25,9 +26,11 @@ CREATE TABLE IF NOT EXISTS glamp.cards (
   CHECK (starting_date <= ending_date)
 );
 ALTER TABLE glamp.cards ADD COLUMN IF NOT EXISTS author text CHECK (author IS NULL OR (char_length(author) BETWEEN 1 AND 60 AND btrim(author) <> ''));
+ALTER TABLE glamp.cards ADD COLUMN IF NOT EXISTS assignee text CHECK (assignee IS NULL OR (char_length(assignee) BETWEEN 1 AND 60 AND btrim(assignee) <> ''));
 ALTER TABLE glamp.cards ADD COLUMN IF NOT EXISTS project text CHECK (project IS NULL OR (char_length(project) BETWEEN 1 AND 60 AND btrim(project) <> ''));
 CREATE INDEX IF NOT EXISTS cards_updated_id_idx ON glamp.cards (updated_at DESC, id);
 CREATE INDEX IF NOT EXISTS cards_author_idx ON glamp.cards (lower(author)) WHERE author IS NOT NULL;
+CREATE INDEX IF NOT EXISTS cards_assignee_idx ON glamp.cards (lower(assignee)) WHERE assignee IS NOT NULL;
 CREATE INDEX IF NOT EXISTS cards_project_idx ON glamp.cards (lower(project)) WHERE project IS NOT NULL;
 REVOKE ALL ON glamp.cards FROM PUBLIC;
 
@@ -38,6 +41,18 @@ CREATE TABLE IF NOT EXISTS glamp.agent_profiles (
   updated_at timestamptz NOT NULL DEFAULT now()
 );
 REVOKE ALL ON glamp.agent_profiles FROM PUBLIC;
+
+CREATE TABLE IF NOT EXISTS glamp.agent_tokens (
+  id uuid PRIMARY KEY,
+  agent_name text NOT NULL CHECK (char_length(agent_name) BETWEEN 1 AND 60 AND btrim(agent_name) <> ''),
+  token_hash text NOT NULL UNIQUE CHECK (token_hash ~ '^[0-9a-f]{64}$'),
+  token_prefix text NOT NULL CHECK (char_length(token_prefix) BETWEEN 1 AND 20),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  last_used_at timestamptz,
+  revoked_at timestamptz
+);
+CREATE INDEX IF NOT EXISTS agent_tokens_agent_idx ON glamp.agent_tokens (lower(agent_name));
+REVOKE ALL ON glamp.agent_tokens FROM PUBLIC;
 
 CREATE TABLE IF NOT EXISTS glamp.card_comments (
   id uuid PRIMARY KEY,
