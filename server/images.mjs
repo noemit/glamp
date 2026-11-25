@@ -29,9 +29,25 @@ function fileName(header, type) {
   return name && Buffer.byteLength(name) <= 255 && !/[\x00-\x1f\x7f/\\]/u.test(name) && name !== '.' && name !== '..' ? name : null;
 }
 
-function publicImage(cardId, { id, name, content_type, size, created_at }) {
-  return { id, name, contentType: content_type, size, createdAt: created_at,
-    url: `/api/cards/${encodeURIComponent(cardId)}/images/${id}` };
+function parseCaption(raw, decodeUri = false) {
+  if (raw === undefined || raw === null) return { ok: true, value: null };
+  if (typeof raw !== 'string') return { ok: false, value: null };
+  let text = raw;
+  if (decodeUri) {
+    try { text = decodeURIComponent(raw); } catch { return { ok: false, value: null }; }
+  }
+  if (text.includes('\0') || !text.isWellFormed()) return { ok: false, value: null };
+  text = text.normalize('NFC').trim();
+  if (!text) return { ok: true, value: null };
+  if ([...text].length > 500) return { ok: false, value: null };
+  return { ok: true, value: text };
+}
+
+function publicImage(cardId, { id, name, caption, content_type, size, created_at }) {
+  return {
+    id, name, caption: caption ?? null, contentType: content_type, size, createdAt: created_at,
+    url: `/api/cards/${encodeURIComponent(cardId)}/images/${id}`,
+  };
 }
 
 // Local-only: a private directory per card, one immutable pair of files per upload.
@@ -61,6 +77,15 @@ function localStore(root, cardId) {
       let row;
       try { row = await metadata(id); } catch (e) { if (e.code === 'ENOENT') return null; throw e; }
       return { row, bytes: await readFile(path.join(dir, id, 'bytes')) };
+    },
+    async setCaption(id, caption) {
+      let row;
+      try { row = await metadata(id); } catch (e) { if (e.code === 'ENOENT') return null; throw e; }
+      const updated = { ...row, caption };
+      const tmp = path.join(dir, id, `.meta-${randomUUID()}.tmp`);
+      await writeFile(tmp, JSON.stringify(updated), { mode: 0o600 });
+      await rename(tmp, path.join(dir, id, 'metadata.json'));
+      return updated;
     },
   };
 }
@@ -109,13 +134,13 @@ function storeFor(cardId) {
   if (!storageConfigured) {
     return {
       list() {
-        return sql`SELECT id, name, content_type, size, created_at FROM glamp.card_images
+        return sql`SELECT id, name, caption, content_type, size, created_at FROM glamp.card_images
                    WHERE card_id = ${cardId} ORDER BY created_at, id`;
       },
       async put(row, bytes) {
         const Key = `card-images/${row.id}`;
-        await sql`INSERT INTO glamp.card_images (id, card_id, object_key, name, content_type, size, data, created_at)
-                  VALUES (${row.id}, ${cardId}, ${Key}, ${row.name}, ${row.content_type}, ${row.size}, ${bytes}, ${row.created_at})`;
+        await sql`INSERT INTO glamp.card_images (id, card_id, object_key, name, caption, content_type, size, data, created_at)
+                  VALUES (${row.id}, ${cardId}, ${Key}, ${row.name}, ${row.caption}, ${row.content_type}, ${row.size}, ${bytes}, ${row.created_at})`;
       },
       async get(id) {
         const [row] = await sql`SELECT content_type, size, data FROM glamp.card_images
@@ -127,6 +152,12 @@ function storeFor(cardId) {
         }
         return { row, bytes };
       },
+      async setCaption(id, caption) {
+        const [row] = await sql`UPDATE glamp.card_images SET caption = ${caption}
+                                WHERE card_id = ${cardId} AND id = ${id}
+                                RETURNING id, name, caption, content_type, size, created_at`;
+        return row || null;
+      },
     };
   }
   if (![Bucket, endpoint, region, accessKeyId, secretAccessKey].every(Boolean) || !/^https:\/\//i.test(endpoint)) {
@@ -135,15 +166,15 @@ function storeFor(cardId) {
   const s3 = s3Client(endpoint, region, accessKeyId, secretAccessKey);
   return {
     list() {
-      return sql`SELECT id, name, content_type, size, created_at FROM glamp.card_images
+      return sql`SELECT id, name, caption, content_type, size, created_at FROM glamp.card_images
                  WHERE card_id = ${cardId} ORDER BY created_at, id`;
     },
     async put(row, bytes) {
       const Key = `card-images/${row.id}`; // Never interpolate user input into an object key.
       await s3.send(new PutObjectCommand({ Bucket, Key, ContentType: row.content_type, Body: bytes }));
       try {
-        await sql`INSERT INTO glamp.card_images (id, card_id, object_key, name, content_type, size, created_at)
-                  VALUES (${row.id}, ${cardId}, ${Key}, ${row.name}, ${row.content_type}, ${row.size}, ${row.created_at})`;
+        await sql`INSERT INTO glamp.card_images (id, card_id, object_key, name, caption, content_type, size, created_at)
+                  VALUES (${row.id}, ${cardId}, ${Key}, ${row.name}, ${row.caption}, ${row.content_type}, ${row.size}, ${row.created_at})`;
       } catch (e) {
         // Definite constraint rejection (e.g. card deleted concurrently). If the
         // commit outcome is unknown, keep the private object rather than break a live row.
@@ -161,6 +192,12 @@ function storeFor(cardId) {
         throw new Error('Stored image size mismatch');
       }
       return { row, bytes: Buffer.from(await Body.transformToByteArray()) };
+    },
+    async setCaption(id, caption) {
+      const [row] = await sql`UPDATE glamp.card_images SET caption = ${caption}
+                              WHERE card_id = ${cardId} AND id = ${id}
+                              RETURNING id, name, caption, content_type, size, created_at`;
+      return row || null;
     },
   };
 }
@@ -190,10 +227,28 @@ imagesRouter.post('/:id/images', (req, res, next) => {
   if (!type || !req.is(type)) return res.status(415).json({ error: 'Image signature does not match its content type.' });
   const name = fileName(req.get('x-filename'), type);
   if (!name) return res.status(400).json({ error: 'Invalid image filename.' });
-  const row = { id: randomUUID(), name, content_type: type, size: req.body.length, created_at: new Date().toISOString() };
+  const cap = parseCaption(req.get('x-caption'), true);
+  if (!cap.ok) return res.status(400).json({ error: 'Caption must be valid text of at most 500 characters.' });
+  const row = {
+    id: randomUUID(), name, caption: cap.value, content_type: type,
+    size: req.body.length, created_at: new Date().toISOString(),
+  };
   await res.locals.imageStore.put(row, req.body);
   const image = publicImage(req.params.id, row);
   res.location(image.url).status(201).json({ image });
+});
+
+imagesRouter.patch('/:id/images/:imageId', express.json({ limit: '16kb' }), async (req, res) => {
+  const { imageId } = req.params;
+  if (!IMAGE_ID.test(imageId)) return res.status(404).json({ error: 'Image not found.' });
+  if (!req.body || typeof req.body !== 'object' || Array.isArray(req.body) || !Object.hasOwn(req.body, 'caption')) {
+    return res.status(400).json({ error: 'Expected a JSON object with caption.' });
+  }
+  const cap = parseCaption(req.body.caption, false);
+  if (!cap.ok) return res.status(400).json({ error: 'Caption must be valid text of at most 500 characters.' });
+  const row = await res.locals.imageStore.setCaption(imageId, cap.value);
+  if (!row) return res.status(404).json({ error: 'Image not found.' });
+  res.json({ image: publicImage(req.params.id, row) });
 });
 
 imagesRouter.get('/:id/images/:imageId', async (req, res) => {

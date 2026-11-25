@@ -26,6 +26,7 @@ Every new comment bumps the card's `updatedAt` timestamp, so `updatedSince` catc
    - assignee=<name>             Filter to cards assigned to a bot or Owner (leading @ optional)
    - author=<name>               Filter to cards created or commented on by an agent
    - updatedSince=<ISO-8601>     Only cards updated or commented on strictly after this timestamp
+   - archived=false|true|all     Default false (active cards only); true returns archived cards
    -> 200 { "cards": [ ... ] }
 
 2. Read a single card:
@@ -73,11 +74,20 @@ Every new comment bumps the card's `updatedAt` timestamp, so `updatedSince` catc
    Content-Type: application/json
    Body: { "role": "Growth & SEO", "color": "teal" }   // color: slate | sky | green | amber | rose | teal
 
-8. Images (stored as private Neon blobs, max 3 MiB each):
+8. Images (stored as private Neon blobs, max 3 MiB each — displayed at the top of the card document):
    GET /api/cards/<CARD_UUID>/images
+   -> 200 { "images": [ { "id": "...", "name": "...", "caption": "...", "url": "..." } ] }
+
    POST /api/cards/<CARD_UUID>/images
-   Headers: Content-Type: image/png | image/jpeg | image/webp, x-filename: <url-encoded filename>
+   Headers:
+     Content-Type: image/png | image/jpeg | image/webp
+     x-filename: <url-encoded filename>
+     x-caption: <optional url-encoded caption, up to 500 chars>
    Body: raw image bytes
+
+   PATCH /api/cards/<CARD_UUID>/images/<IMAGE_UUID>
+   Content-Type: application/json
+   Body: { "caption": "Updated figure caption" }
 
 ## Conventions
 - Set status to "review" deliberately when work needs the owner's attention (entering "review" triggers Web Push if enabled).

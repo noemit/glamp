@@ -89,9 +89,10 @@ describe('cards HTTP contract', { concurrency: false }, () => {
     assert.equal(first.author, null);
     assert.equal(first.assignee, null);
     assert.equal(first.project, null);
+    assert.equal(first.archived, false);
     assert.deepEqual(first.contributors, []);
     assert.equal(first.commentCount, 0);
-    assert.deepEqual(Object.keys(first).sort(), ['id', 'title', 'body', 'isTask', 'status', 'startingDate', 'endingDate', 'author', 'assignee', 'project', 'contributors', 'commentCount', 'createdAt', 'updatedAt'].sort());
+    assert.deepEqual(Object.keys(first).sort(), ['id', 'title', 'body', 'isTask', 'status', 'startingDate', 'endingDate', 'author', 'assignee', 'project', 'archived', 'contributors', 'commentCount', 'createdAt', 'updatedAt'].sort());
     for (const stamp of [first.createdAt, first.updatedAt]) assert.equal(new Date(stamp).toISOString(), stamp);
     assert.equal(await cardExists(first.id), true);
     assert.deepEqual(await get(first.id), first);
@@ -406,5 +407,31 @@ describe('cards HTTP contract', { concurrency: false }, () => {
 
     // Malformed updatedSince is rejected with 400
     assert.equal((await fetch(`${base}?updatedSince=not-a-date`)).status, 400);
+  });
+
+  it('archives cards out of default lists and restores them cleanly', async () => {
+    const card = await create({ title: 'Old sprint notes' });
+    assert.equal(card.archived, false);
+
+    // Archive it
+    const archived = await patch(card.id, { archived: true });
+    assert.equal(archived.archived, true);
+
+    // Hidden from default list, visible in ?archived=true, ?archived=all, and direct GET /:id
+    const active = await list();
+    assert.equal(active.some(c => c.id === card.id), false);
+    const onlyArchived = await (await fetch(`${base}?archived=true`)).json();
+    assert.ok(onlyArchived.cards.some(c => c.id === card.id));
+    const allCards = await (await fetch(`${base}?archived=all`)).json();
+    assert.ok(allCards.cards.some(c => c.id === card.id));
+    assert.equal((await get(card.id)).archived, true);
+
+    // Restore it
+    const restored = await patch(card.id, { archived: false });
+    assert.equal(restored.archived, false);
+    assert.ok((await list()).some(c => c.id === card.id));
+
+    // Reject invalid archived query value
+    assert.equal((await fetch(`${base}?archived=maybe`)).status, 400);
   });
 });

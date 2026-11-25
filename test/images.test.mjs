@@ -35,8 +35,13 @@ test('private card image API', async t => {
     return (await res.json()).card.id;
   };
   const a = `/api/cards/${await create()}/images`, b = `/api/cards/${await create()}/images`;
-  const post = (path, bytes = png, type = 'image/png', name) => fetch(origin + path, { method: 'POST',
-    headers: { ...auth, 'content-type': type, ...(name === undefined ? {} : { 'x-filename': name }) }, body: bytes });
+  const post = (path, bytes = png, type = 'image/png', name, caption) => fetch(origin + path, { method: 'POST',
+    headers: {
+      ...auth,
+      'content-type': type,
+      ...(name === undefined ? {} : { 'x-filename': name }),
+      ...(caption === undefined ? {} : { 'x-caption': caption }),
+    }, body: bytes });
 
   await t.test('auth before list/upload/download; returned URLs stay same-origin and scoped to the card', async () => {
     assert.equal((await fetch(origin + a)).status, 401);
@@ -129,20 +134,35 @@ test('private card image API', async t => {
       const { query, params } = JSON.parse(req.body);
       if (query.includes('INSERT INTO glamp.card_images')) {
         stored.set(params[0], {
-          id: params[0], card_id: params[1], name: params[3],
-          content_type: params[4], size: params[5], data: params[6], created_at: params[7],
+          id: params[0], card_id: params[1], name: params[3], caption: params[4],
+          content_type: params[5], size: params[6], data: params[7], created_at: params[8],
         });
         return Response.json({ command: 'INSERT', rowCount: 1, rows: [], fields: [] });
       }
-      if (query.includes('SELECT id, name, content_type, size, created_at FROM glamp.card_images')) {
-        const rows = [...stored.values()].filter(r => r.card_id === params[0]).map(r => [r.id, r.name, r.content_type, String(r.size), r.created_at]);
+      if (query.includes('SELECT id, name, caption, content_type, size, created_at FROM glamp.card_images')) {
+        const rows = [...stored.values()].filter(r => r.card_id === params[0]).map(r => [r.id, r.name, r.caption, r.content_type, String(r.size), r.created_at]);
         return Response.json({
           command: 'SELECT', rowCount: rows.length, rows,
           fields: [
-            { name: 'id', dataTypeID: 2950 }, { name: 'name', dataTypeID: 25 },
+            { name: 'id', dataTypeID: 2950 }, { name: 'name', dataTypeID: 25 }, { name: 'caption', dataTypeID: 25 },
             { name: 'content_type', dataTypeID: 25 }, { name: 'size', dataTypeID: 23 }, { name: 'created_at', dataTypeID: 25 },
           ],
         });
+      }
+      if (query.includes('UPDATE glamp.card_images SET caption')) {
+        const hit = stored.get(params[2]);
+        if (hit && hit.card_id === params[1]) {
+          hit.caption = params[0];
+          return Response.json({
+            command: 'UPDATE', rowCount: 1,
+            rows: [[hit.id, hit.name, hit.caption, hit.content_type, String(hit.size), hit.created_at]],
+            fields: [
+              { name: 'id', dataTypeID: 2950 }, { name: 'name', dataTypeID: 25 }, { name: 'caption', dataTypeID: 25 },
+              { name: 'content_type', dataTypeID: 25 }, { name: 'size', dataTypeID: 23 }, { name: 'created_at', dataTypeID: 25 },
+            ],
+          });
+        }
+        return Response.json({ command: 'UPDATE', rowCount: 0, rows: [], fields: [] });
       }
       if (query.includes('SELECT content_type, size, data FROM glamp.card_images')) {
         const hit = stored.get(params[1]);
@@ -158,16 +178,30 @@ test('private card image API', async t => {
     try {
       // cardExists still uses the local SQLite store initialized in before(), so use an existing card ID from local store
       const existingCardId = a.split('/')[3];
-      const upload = await post(`/api/cards/${existingCardId}/images`, png, 'image/png', 'neon-blob.png');
+      const upload = await post(
+        `/api/cards/${existingCardId}/images`, png, 'image/png', 'neon-blob.png',
+        encodeURIComponent('Initial onboarding funnel snapshot'),
+      );
       assert.equal(upload.status, 201);
       const { image } = await upload.json();
       assert.equal(image.name, 'neon-blob.png');
+      assert.equal(image.caption, 'Initial onboarding funnel snapshot');
+      const patched = await fetch(origin + image.url, {
+        method: 'PATCH',
+        headers: { ...auth, 'content-type': 'application/json' },
+        body: JSON.stringify({ caption: 'Updated funnel chart' }),
+      });
+      assert.equal(patched.status, 200);
+      assert.equal((await patched.json()).image.caption, 'Updated funnel chart');
       const listed = await (await get(`/api/cards/${existingCardId}/images`)).json();
       assert.equal(listed.images.length, 1);
       assert.equal(listed.images[0].id, image.id);
+      assert.equal(listed.images[0].caption, 'Updated funnel chart');
       const dl = await get(image.url);
       assert.equal(dl.status, 200);
       assert.deepEqual(Buffer.from(await dl.arrayBuffer()), png);
+      // Reject over-length captions (> 500 chars)
+      assert.equal((await post(`/api/cards/${existingCardId}/images`, png, 'image/png', 'too-long.png', 'a'.repeat(501))).status, 400);
     } finally {
       neonConfig.fetchFunction = savedFetch;
       for (const k of cloudKeys) delete process.env[k];

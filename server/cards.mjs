@@ -6,7 +6,7 @@ import express from 'express';
 
 const ownerOnly = (req, res, next) => req.role === 'owner' ? next() : res.status(403).json({ error: 'Owner session required.' });
 
-const defaults = { body: '', status: 'open', isTask: false, startingDate: null, endingDate: null, author: null, assignee: null, project: null };
+const defaults = { body: '', status: 'open', isTask: false, startingDate: null, endingDate: null, author: null, assignee: null, project: null, archived: false };
 const editable = new Set(['title', ...Object.keys(defaults)]);
 const agentColors = ['slate', 'sky', 'green', 'amber', 'rose', 'teal'];
 const uuid = /^[a-f\d]{8}-(?:[a-f\d]{4}-){3}[a-f\d]{12}$/i;
@@ -87,6 +87,7 @@ function changes(input) {
   if (Object.hasOwn(result, 'body')) checkText(result.body, 'body', 20000);
   if (Object.hasOwn(result, 'status') && !['open', 'review', 'done'].includes(result.status)) invalid('Invalid status.');
   if (Object.hasOwn(result, 'isTask') && typeof result.isTask !== 'boolean') invalid('isTask must be boolean.');
+  if (Object.hasOwn(result, 'archived') && typeof result.archived !== 'boolean') invalid('archived must be boolean.');
   if (Object.hasOwn(result, 'author')) result.author = checkAuthor(result.author, 'author', false);
   if (Object.hasOwn(result, 'assignee')) result.assignee = checkAssignee(result.assignee, 'assignee');
   if (Object.hasOwn(result, 'project')) result.project = checkAuthor(result.project, 'project', false);
@@ -138,6 +139,7 @@ async function openStore() {
         author TEXT CHECK (author IS NULL OR length(author) BETWEEN 1 AND 60),
         assignee TEXT CHECK (assignee IS NULL OR length(assignee) BETWEEN 1 AND 60),
         project TEXT CHECK (project IS NULL OR length(project) BETWEEN 1 AND 60),
+        archived INTEGER NOT NULL DEFAULT 0 CHECK (archived IN (0,1)),
         created_at TEXT NOT NULL DEFAULT (${now}), updated_at TEXT NOT NULL DEFAULT (${now}),
         revision INTEGER NOT NULL DEFAULT 0, CHECK (starting_date <= ending_date)
       ) STRICT;
@@ -175,6 +177,9 @@ async function openStore() {
     if (!cols.some(c => c.name === 'project')) {
       db.exec('ALTER TABLE cards ADD COLUMN project TEXT;');
     }
+    if (!cols.some(c => c.name === 'archived')) {
+      db.exec('ALTER TABLE cards ADD COLUMN archived INTEGER NOT NULL DEFAULT 0;');
+    }
     // SQLite's built-in lower() only folds ASCII.
     db.function('lower', { deterministic: true }, s => s.toLowerCase());
   } catch (err) {
@@ -195,7 +200,7 @@ let store;
 export function initStore() {
   return store ??= openStore().catch(err => { store = undefined; throw err; });
 }
-const columns = db => `id, title, body, status, is_task, ${db.dates}, author, assignee, project, created_at, updated_at, revision`;
+const columns = db => `id, title, body, status, is_task, ${db.dates}, author, assignee, project, archived, created_at, updated_at, revision`;
 function uniqueContributors(cardAuthor, commentAuthors = []) {
   const seen = new Set();
   const list = [];
@@ -212,7 +217,7 @@ function toCard(row, commentAuthors = []) {
   return {
     id: row.id, title: row.title, body: row.body, status: row.status, isTask: Boolean(row.is_task),
     startingDate: row.starting_date, endingDate: row.ending_date, author: row.author ?? null,
-    assignee: row.assignee ?? null, project: row.project ?? null,
+    assignee: row.assignee ?? null, project: row.project ?? null, archived: Boolean(row.archived),
     contributors: uniqueContributors(row.author ?? null, commentAuthors),
     commentCount: commentAuthors.length,
     createdAt: new Date(row.created_at).toISOString(), updatedAt: new Date(row.updated_at).toISOString(),
@@ -224,7 +229,7 @@ function toComment(row) {
     createdAt: new Date(row.created_at).toISOString(),
   };
 }
-const values = (db, c) => [c.title, c.body, c.status, db.boolean(c.isTask), c.startingDate, c.endingDate, c.author, c.assignee, c.project];
+const values = (db, c) => [c.title, c.body, c.status, db.boolean(c.isTask), c.startingDate, c.endingDate, c.author, c.assignee, c.project, db.boolean(c.archived)];
 async function getRow(db, id) {
   if (!validId(id)) invalid('Invalid card UUID.');
   const [row] = await db.query(`SELECT ${columns(db)} FROM ${db.table} WHERE id = $1`, [id.toLowerCase()]);
@@ -348,6 +353,10 @@ cardsRouter.get('/', async (req, res) => {
   const sinceMs = req.query.updatedSince === undefined || !String(req.query.updatedSince).trim()
     ? null
     : checkTimestamp(String(req.query.updatedSince), 'updatedSince');
+  const archivedMode = req.query.archived === undefined ? 'false' : String(req.query.archived).trim().toLowerCase();
+  if (!['false', 'true', 'only', 'all'].includes(archivedMode)) {
+    invalid('archived must be false, true, or all.');
+  }
   const db = await initStore();
   const term = q.trim();
   // No LIKE patterns, regexes or full-text syntax: all punctuation is literal.
@@ -363,6 +372,8 @@ cardsRouter.get('/', async (req, res) => {
     }
   }
   let cards = rows.map(row => toCard(row, byCard.get(row.id) ?? []));
+  if (archivedMode === 'false') cards = cards.filter(c => !c.archived);
+  else if (archivedMode === 'true' || archivedMode === 'only') cards = cards.filter(c => c.archived);
   if (authorFilter) {
     const target = authorFilter.toLowerCase();
     cards = cards.filter(c => c.contributors.some(name => name.toLowerCase() === target));
@@ -396,8 +407,8 @@ cardsRouter.post('/', parseJson, async (req, res) => {
   checkRange(card);
   const db = await initStore();
   if (card.project) card.project = await ensureProject(db, card.project);
-  const [row] = await db.query(`INSERT INTO ${db.table} (id, title, body, status, is_task, starting_date, ending_date, author, assignee, project)
-    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING ${columns(db)}`, [randomUUID(), ...values(db, card)]);
+  const [row] = await db.query(`INSERT INTO ${db.table} (id, title, body, status, is_task, starting_date, ending_date, author, assignee, project, archived)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING ${columns(db)}`, [randomUUID(), ...values(db, card)]);
   await ensureProfile(db, row.author);
   const saved = toCard(row, []);
   if (saved.status === 'review') await notifyReview(req, saved);
@@ -414,8 +425,8 @@ cardsRouter.patch('/:id', parseJson, async (req, res) => {
     const card = { ...toCard(old), ...edit };
     checkRange(card);
     const [row] = await db.query(`UPDATE ${db.table} SET title = $1, body = $2, status = $3, is_task = $4,
-      starting_date = $5, ending_date = $6, author = $7, assignee = $8, project = $9, updated_at = ${db.now}, revision = revision + 1
-      WHERE id = $10 AND revision = $11 RETURNING ${columns(db)}`, [...values(db, card), old.id, old.revision]);
+      starting_date = $5, ending_date = $6, author = $7, assignee = $8, project = $9, archived = $10, updated_at = ${db.now}, revision = revision + 1
+      WHERE id = $11 AND revision = $12 RETURNING ${columns(db)}`, [...values(db, card), old.id, old.revision]);
     if (!row) continue;
     await ensureProfile(db, row.author);
     const authors = await commentAuthorsFor(db, row.id);

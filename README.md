@@ -68,6 +68,7 @@ BEGIN
     author text CHECK (author IS NULL OR (char_length(author) BETWEEN 1 AND 60 AND btrim(author) <> '')),
     assignee text CHECK (assignee IS NULL OR (char_length(assignee) BETWEEN 1 AND 60 AND btrim(assignee) <> '')),
     project text CHECK (project IS NULL OR (char_length(project) BETWEEN 1 AND 60 AND btrim(project) <> '')),
+    archived boolean NOT NULL DEFAULT false,
     created_at timestamptz NOT NULL DEFAULT now(),
     updated_at timestamptz NOT NULL DEFAULT now(),
     revision bigint NOT NULL DEFAULT 0 CHECK (revision >= 0),
@@ -76,7 +77,9 @@ BEGIN
   ALTER TABLE glamp.cards ADD COLUMN IF NOT EXISTS author text CHECK (author IS NULL OR (char_length(author) BETWEEN 1 AND 60 AND btrim(author) <> ''));
   ALTER TABLE glamp.cards ADD COLUMN IF NOT EXISTS assignee text CHECK (assignee IS NULL OR (char_length(assignee) BETWEEN 1 AND 60 AND btrim(assignee) <> ''));
   ALTER TABLE glamp.cards ADD COLUMN IF NOT EXISTS project text CHECK (project IS NULL OR (char_length(project) BETWEEN 1 AND 60 AND btrim(project) <> ''));
+  ALTER TABLE glamp.cards ADD COLUMN IF NOT EXISTS archived boolean NOT NULL DEFAULT false;
   CREATE INDEX IF NOT EXISTS cards_updated_id_idx ON glamp.cards (updated_at DESC, id);
+  CREATE INDEX IF NOT EXISTS cards_archived_idx ON glamp.cards (archived, updated_at DESC, id);
   CREATE INDEX IF NOT EXISTS cards_author_idx ON glamp.cards (lower(author)) WHERE author IS NOT NULL;
   CREATE INDEX IF NOT EXISTS cards_assignee_idx ON glamp.cards (lower(assignee)) WHERE assignee IS NOT NULL;
   CREATE INDEX IF NOT EXISTS cards_project_idx ON glamp.cards (lower(project)) WHERE project IS NOT NULL;
@@ -118,12 +121,14 @@ BEGIN
     card_id uuid NOT NULL REFERENCES glamp.cards (id) ON DELETE CASCADE,
     object_key text NOT NULL UNIQUE CHECK (object_key = 'card-images/' || id::text),
     name text NOT NULL CHECK (octet_length(name) BETWEEN 1 AND 255),
+    caption text CHECK (caption IS NULL OR (char_length(caption) <= 500)),
     content_type text NOT NULL CHECK (content_type IN ('image/jpeg', 'image/png', 'image/webp')),
     size integer NOT NULL CHECK (size BETWEEN 1 AND 3145728),
     data bytea CHECK (data IS NULL OR octet_length(data) BETWEEN 1 AND 3145728),
     created_at timestamptz NOT NULL DEFAULT now()
   );
   ALTER TABLE glamp.card_images ADD COLUMN IF NOT EXISTS data bytea CHECK (data IS NULL OR octet_length(data) BETWEEN 1 AND 3145728);
+  ALTER TABLE glamp.card_images ADD COLUMN IF NOT EXISTS caption text CHECK (caption IS NULL OR (char_length(caption) <= 500));
   CREATE INDEX IF NOT EXISTS card_images_card_created_idx ON glamp.card_images (card_id, created_at, id);
   REVOKE ALL ON glamp.card_images FROM PUBLIC;
 

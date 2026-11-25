@@ -8,6 +8,7 @@ const views = {
   todos: { title: 'To-dos', icon: 'task', addLabel: 'Add To-do' },
   board: { title: 'Board', icon: 'board', addLabel: 'Add Card' },
   calendar: { title: 'Calendar', icon: 'calendar', addLabel: 'Add Card' },
+  archive: { title: 'Archive', icon: 'archive', addLabel: 'Add Notes' },
 };
 const state = {
   owner: false,
@@ -167,7 +168,8 @@ function notify(text) {
   }, 5500);
 }
 function sheetMessage(text) {
-  $('dialog-message').textContent = text;
+  if (!$('doc-view').hidden && !dialog.open) $('doc-message').textContent = text;
+  else $('dialog-message').textContent = text;
 }
 async function request(path, options = {}, privateData = true) {
   const epoch = state.epoch;
@@ -307,9 +309,13 @@ function lock(reason = '') {
   state.todoDay = '';
   resetFilters();
   $('workspace').hidden = true;
+  $('doc-view').hidden = true;
+  $('doc-detail').replaceChildren();
+  $('doc-message').textContent = '';
   $('views').hidden = true;
   $('project-switcher').hidden = true;
   $('account').hidden = true;
+  $('open-archive').hidden = true;
   if (dialog.open) dialog.close();
   $('detail').replaceChildren();
   $('results').replaceChildren();
@@ -347,6 +353,7 @@ async function checkSession(restore = false) {
     $('views').hidden = false;
     $('project-switcher').hidden = false;
     $('account').hidden = false;
+    $('open-archive').hidden = false;
     syncFilterChips();
     refresh();
     syncLocation();
@@ -473,8 +480,9 @@ async function refresh() {
   state.loadError = '';
   render();
   try {
+    const archivedParam = state.view === 'archive' ? '&archived=true' : '';
     const [cardsRes, agentsRes, projectsRes] = await Promise.all([
-      request(`/api/cards?q=${encodeURIComponent(query)}`),
+      request(`/api/cards?q=${encodeURIComponent(query)}${archivedParam}`),
       request('/api/agents').catch(() => ({ agents: [] })),
       request('/api/projects').catch(() => ({ projects: [] })),
     ]);
@@ -505,10 +513,23 @@ $('search').addEventListener('input', () => {
 $('views').addEventListener('click', (e) => {
   const tab = e.target.closest('[data-view]');
   if (!tab) return;
+  const wasArchive = state.view === 'archive';
   state.view = tab.dataset.view;
+  if (!$('doc-view').hidden) closeDoc(true);
   syncFilterChips();
-  render();
+  if (wasArchive) refresh();
+  else render();
 });
+$('open-archive').addEventListener('click', () => {
+  if (!state.owner) return;
+  const wasArchive = state.view === 'archive';
+  state.view = wasArchive ? 'docs' : 'archive';
+  if (!$('doc-view').hidden) closeDoc(true);
+  syncFilterChips();
+  refresh();
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+});
+$('doc-back').addEventListener('click', () => closeDoc(true));
 $('add').addEventListener('click', () => showEditor(null));
 
 function empty(title, description, glyph, action) {
@@ -570,6 +591,18 @@ function blankState() {
         $('search').focus();
       }),
     );
+  if (state.view === 'archive') {
+    return empty(
+      'Archive is empty',
+      'Archived cards are hidden from Notes, To-dos, Board, and Calendar and live here until restored.',
+      'archive',
+      button('Back to Notes', () => {
+        state.view = 'docs';
+        syncFilterChips();
+        refresh();
+      }),
+    );
+  }
   const tasks = state.view === 'todos';
   const inProject = state.project !== 'all' && state.project !== '__unassigned__';
   return empty(
@@ -590,9 +623,12 @@ function render() {
     if (tab.dataset.view === state.view) tab.setAttribute('aria-current', 'page');
     else tab.removeAttribute('aria-current');
   }
-  const meta = views[state.view];
+  if (state.view === 'archive') $('open-archive').setAttribute('aria-current', 'page');
+  else $('open-archive').removeAttribute('aria-current');
+  const meta = views[state.view] || views.docs;
   $('workspace-title').textContent = meta.title;
   $('view-title').textContent = meta.title;
+  $('add').hidden = state.view === 'archive';
   $('add-label').textContent = meta.addLabel;
   $('view-icon').firstElementChild.setAttribute('href', `#i-${meta.icon}`);
 
@@ -1020,31 +1056,43 @@ function replaceCardURL(id, push = false) {
   else url.searchParams.delete('card');
   if (url.href !== location.href) history[push ? 'pushState' : 'replaceState'](null, '', url);
 }
-function closeSheet(updateURL = true) {
+function closeDialog() {
   ++sheetVersion;
   if (dialog.open) dialog.close();
   $('detail').replaceChildren();
-  sheetMessage('');
+  $('dialog-message').textContent = '';
+}
+function closeDoc(updateURL = true) {
+  ++sheetVersion;
+  $('doc-view').hidden = true;
+  $('doc-detail').replaceChildren();
+  $('doc-message').textContent = '';
+  if (state.owner) $('workspace').hidden = false;
   if (updateURL) replaceCardURL(null);
   if (state.owner && document.activeElement === document.body) $('add').focus();
+}
+function closeSheet(updateURL = true) {
+  if (dialog.open) closeDialog();
+  if (!$('doc-view').hidden) closeDoc(updateURL);
 }
 function syncLocation() {
   if (!state.owner) return;
   const id = new URL(location.href).searchParams.get('card');
   if (id) openCard(id);
-  else closeSheet(false);
+  else if (!$('doc-view').hidden) closeDoc(false);
 }
 window.addEventListener('popstate', syncLocation);
-$('close').addEventListener('click', () => closeSheet());
+$('close').addEventListener('click', () => closeDialog());
 dialog.addEventListener('cancel', (e) => {
   e.preventDefault();
-  closeSheet();
+  closeDialog();
 });
 document.addEventListener('click', (e) => {
   const a = e.target.closest('a[data-card]');
   if (!a || e.defaultPrevented || e.button !== 0 || e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return;
   e.preventDefault();
   if (!state.owner) return;
+  if (dialog.open) closeDialog();
   replaceCardURL(a.dataset.card, true);
   openCard(a.dataset.card);
 });
@@ -1053,25 +1101,39 @@ function sheet(title) {
   heading.id = 'dialog-title';
   heading.tabIndex = -1;
   $('detail').replaceChildren(heading);
-  sheetMessage('');
+  $('dialog-message').textContent = '';
   if (!dialog.open) dialog.showModal();
   dialog.scrollTop = 0;
   heading.focus();
   return heading;
 }
+function docSheet(title) {
+  if (dialog.open) closeDialog();
+  const heading = node('h1', '', title);
+  heading.id = 'doc-title';
+  heading.tabIndex = -1;
+  $('doc-back-label').textContent = `Back to ${views[state.view]?.title || 'Notes'}`;
+  $('doc-detail').replaceChildren(heading);
+  $('doc-message').textContent = '';
+  $('workspace').hidden = true;
+  $('doc-view').hidden = false;
+  window.scrollTo({ top: 0, behavior: 'instant' });
+  heading.focus();
+  return heading;
+}
 async function openCard(id) {
   const version = ++sheetVersion;
-  sheet('Opening card…');
+  docSheet('Opening card…');
   try {
     if (!idPattern.test(id)) throw new Error('This card link is not valid.');
     const { card } = await request(cardAPI(id));
     if (version === sheetVersion) showCard(card);
   } catch (error) {
     if (error === stale || version !== sheetVersion || !state.owner) return;
-    sheet('Card unavailable');
-    $('detail').append(
+    docSheet('Card unavailable');
+    $('doc-detail').append(
       node('p', 'intro', message(error)),
-      button('Return to workspace', () => closeSheet()),
+      button('Return to workspace', () => closeDoc(true)),
     );
   }
 }
@@ -1092,38 +1154,244 @@ function linkTarget(value) {
     return null;
   }
 }
-function renderBody(text) {
-  const block = node('div', 'body-text');
-  if (!text) {
-    block.append(node('span', 'help', 'No notes on this card yet.'));
-    return block;
+function safeExternalURL(value) {
+  try {
+    const u = new URL(value);
+    return (u.protocol === 'https:' || u.protocol === 'http:') && !u.username && !u.password ? u.href : null;
+  } catch {
+    return null;
   }
-  // Only same-workspace card URLs (or [[id]]) become links. Other Markdown,
-  // HTML and external URLs stay literal; never embed remote resources.
-  const tokens =
-    /\[([^\[\]\n]{1,200})\]\(([^\s()]+)\)|\[\[(?:card:)?([a-zA-Z0-9_-]{1,128})(?:\|([^\[\]\n]{1,200}))?\]\]|https?:\/\/[^\s<>"'()[\]]+|(?<![\w/])\/\?card=[a-zA-Z0-9_-]+/gi;
+}
+function appendInline(text, parent) {
+  // Zero-innerHTML inline Markdown: `code`, **bold**, ~~strike~~, *italic*, [label](url), [[card]], and bare URLs.
+  const tokenRe =
+    /`([^`\n]+)`|\*\*([^*\n]+?)\*\*|~~([^~\n]+?)~~|\*([^*\n]+?)\*|\[([^\[\]\n]{1,200})\]\(([^\s()]+)\)|\[\[(?:card:)?([a-zA-Z0-9_-]{1,128})(?:\|([^\[\]\n]{1,200}))?\]\]|https?:\/\/[^\s<>"'()[\]]+|(?<![\w/])\/\?card=[a-zA-Z0-9_-]+/g;
   let last = 0;
-  for (const m of text.matchAll(tokens)) {
-    block.append(text.slice(last, m.index));
-    const raw = m[0],
-      target = m[2] || raw.replace(/[.,;!]+$/, ''),
-      id = m[3] || linkTarget(target);
-    if (id) {
-      const label =
-        m[1] || m[4] || (m[3] && state.cards.find((c) => c.id === id)?.title) || (m[3] ? id : target);
-      block.append(cardLink({ id }, '', label));
-      if (!m[2] && !m[3]) block.append(raw.slice(target.length));
-    } else block.append(raw);
+  for (const m of text.matchAll(tokenRe)) {
+    if (m.index > last) parent.append(text.slice(last, m.index));
+    const raw = m[0];
+    if (m[1] !== undefined) {
+      parent.append(node('code', '', m[1]));
+    } else if (m[2] !== undefined) {
+      const strong = node('strong');
+      appendInline(m[2], strong);
+      parent.append(strong);
+    } else if (m[3] !== undefined) {
+      const del = node('del');
+      appendInline(m[3], del);
+      parent.append(del);
+    } else if (m[4] !== undefined) {
+      const em = node('em');
+      appendInline(m[4], em);
+      parent.append(em);
+    } else if (m[5] !== undefined && m[6] !== undefined) {
+      const cid = linkTarget(m[6]);
+      if (cid) {
+        parent.append(cardLink({ id: cid }, '', m[5]));
+      } else {
+        const ext = safeExternalURL(m[6]);
+        if (ext) {
+          const a = node('a', '', m[5]);
+          a.href = ext;
+          a.target = '_blank';
+          a.rel = 'noopener noreferrer';
+          parent.append(a);
+        } else {
+          parent.append(raw);
+        }
+      }
+    } else if (m[7] !== undefined) {
+      const cid = m[7];
+      const label = m[8] || state.cards.find((c) => c.id === cid)?.title || cid;
+      parent.append(cardLink({ id: cid }, '', label));
+    } else {
+      const trimmed = raw.replace(/[.,;!]+$/, '');
+      const trail = raw.slice(trimmed.length);
+      const cid = linkTarget(trimmed);
+      if (cid) {
+        parent.append(cardLink({ id: cid }, '', trimmed));
+        if (trail) parent.append(trail);
+      } else {
+        const ext = safeExternalURL(trimmed);
+        if (ext) {
+          const a = node('a', '', trimmed);
+          a.href = ext;
+          a.target = '_blank';
+          a.rel = 'noopener noreferrer';
+          parent.append(a);
+          if (trail) parent.append(trail);
+        } else {
+          parent.append(raw);
+        }
+      }
+    }
     last = m.index + raw.length;
   }
-  block.append(text.slice(last));
-  return block;
+  if (last < text.length) parent.append(text.slice(last));
+}
+function splitTableRow(line) {
+  return line
+    .trim()
+    .replace(/^\|/, '')
+    .replace(/\|$/, '')
+    .split('|')
+    .map((cell) => cell.trim());
+}
+function renderBody(text) {
+  const container = node('div', 'md-body');
+  if (!text || !text.trim()) {
+    container.append(node('p', 'help', 'No notes on this card yet.'));
+    return container;
+  }
+  const lines = text.replace(/\r\n?/g, '\n').split('\n');
+  let i = 0;
+  const isSpecial = (line) =>
+    /^```/.test(line) ||
+    /^#{1,4}\s+/.test(line) ||
+    /^>\s?/.test(line) ||
+    /^(?:---+|\*\*\*+|___+)\s*$/.test(line) ||
+    /^\s*[-*+]\s+/.test(line) ||
+    /^\s*\d+\.\s+/.test(line);
+
+  while (i < lines.length) {
+    const line = lines[i];
+    if (!line.trim()) {
+      i++;
+      continue;
+    }
+    // Fenced code block
+    if (/^```/.test(line)) {
+      i++;
+      const codeLines = [];
+      while (i < lines.length && !/^```/.test(lines[i])) {
+        codeLines.push(lines[i]);
+        i++;
+      }
+      if (i < lines.length) i++;
+      const pre = node('pre'),
+        code = node('code', '', codeLines.join('\n'));
+      pre.append(code);
+      container.append(pre);
+      continue;
+    }
+    // Horizontal rule
+    if (/^(?:---+|\*\*\*+|___+)\s*$/.test(line)) {
+      container.append(node('hr'));
+      i++;
+      continue;
+    }
+    // Heading (# -> h2 .. #### -> h5)
+    const hMatch = /^(#{1,4})\s+(.+)$/.exec(line);
+    if (hMatch) {
+      const h = node(`h${Math.min(5, hMatch[1].length + 1)}`);
+      appendInline(hMatch[2].trim(), h);
+      container.append(h);
+      i++;
+      continue;
+    }
+    // Table (header | sep | rows)
+    if (
+      line.includes('|') &&
+      i + 1 < lines.length &&
+      /^\s*\|?(?:\s*:?-{3,}:?\s*\|)+\s*:?-{3,}:?\s*\|?\s*$/.test(lines[i + 1])
+    ) {
+      const wrap = node('div', 'md-table-wrap'),
+        table = node('table'),
+        thead = node('thead'),
+        tbody = node('tbody');
+      const headTr = node('tr');
+      for (const cell of splitTableRow(line)) {
+        const th = node('th');
+        appendInline(cell, th);
+        headTr.append(th);
+      }
+      thead.append(headTr);
+      i += 2;
+      while (i < lines.length && lines[i].trim() && lines[i].includes('|')) {
+        const tr = node('tr');
+        for (const cell of splitTableRow(lines[i])) {
+          const td = node('td');
+          appendInline(cell, td);
+          tr.append(td);
+        }
+        tbody.append(tr);
+        i++;
+      }
+      table.append(thead, tbody);
+      wrap.append(table);
+      container.append(wrap);
+      continue;
+    }
+    // Blockquote
+    if (/^>\s?/.test(line)) {
+      const quote = node('blockquote');
+      const qLines = [];
+      while (i < lines.length && /^>\s?/.test(lines[i])) {
+        qLines.push(lines[i].replace(/^>\s?/, ''));
+        i++;
+      }
+      const p = node('p');
+      qLines.forEach((ql, idx) => {
+        if (idx > 0) p.append(document.createElement('br'));
+        appendInline(ql, p);
+      });
+      quote.append(p);
+      container.append(quote);
+      continue;
+    }
+    // Checklist or unordered list
+    if (/^\s*[-*+]\s+/.test(line)) {
+      const isChecklist = /^\s*[-*+]\s+\[([ xX])\]\s+/.test(line);
+      const ul = node('ul', isChecklist ? 'md-checklist' : '');
+      while (i < lines.length && /^\s*[-*+]\s+/.test(lines[i])) {
+        const checkMatch = /^\s*[-*+]\s+\[([ xX])\]\s+(.*)$/.exec(lines[i]);
+        const li = node('li');
+        if (isChecklist && checkMatch) {
+          const checked = checkMatch[1].toLowerCase() === 'x';
+          if (checked) li.className = 'checked';
+          const textSpan = node('span');
+          appendInline(checkMatch[2], textSpan);
+          li.append(node('span', `mini-box${checked ? ' checked' : ''}`), textSpan);
+        } else {
+          appendInline(lines[i].replace(/^\s*[-*+]\s+/, ''), li);
+        }
+        ul.append(li);
+        i++;
+      }
+      container.append(ul);
+      continue;
+    }
+    // Ordered list
+    if (/^\s*\d+\.\s+/.test(line)) {
+      const ol = node('ol');
+      while (i < lines.length && /^\s*\d+\.\s+/.test(lines[i])) {
+        const li = node('li');
+        appendInline(lines[i].replace(/^\s*\d+\.\s+/, ''), li);
+        ol.append(li);
+        i++;
+      }
+      container.append(ol);
+      continue;
+    }
+    // Paragraph
+    const p = node('p');
+    let firstLine = true;
+    while (i < lines.length && lines[i].trim() && !isSpecial(lines[i])) {
+      if (!firstLine) p.append(document.createElement('br'));
+      appendInline(lines[i], p);
+      firstLine = false;
+      i++;
+    }
+    container.append(p);
+  }
+  return container;
 }
 function showCard(card) {
   const version = ++sheetVersion;
-  const heading = sheet(card.title),
-    detail = $('detail');
+  const heading = docSheet(card.title),
+    detail = $('doc-detail');
   const top = node('div', 'detail-top');
+  if (card.archived) top.append(node('span', 'pill archived-tag', 'Archived'));
   if (card.project) top.append(node('span', 'pill project-tag', card.project));
   if (card.assignee) top.append(node('span', 'pill assignee-tag', `@${card.assignee}`));
   top.append(
@@ -1145,7 +1413,7 @@ function showCard(card) {
     s.append(icon('calendar'), scheduleText(card));
     meta.append(s);
   }
-  const actions = node('div', 'button-row');
+  const actions = node('div', 'button-row doc-actions');
   const statusAction = async (next) => {
     for (const b of actions.querySelectorAll('button')) b.disabled = true;
     try {
@@ -1162,12 +1430,41 @@ function showCard(card) {
       }
     }
   };
+  const archiveAction = async (archived) => {
+    for (const b of actions.querySelectorAll('button')) b.disabled = true;
+    try {
+      const { card: saved } = await request(cardAPI(card.id), json('PATCH', { archived }));
+      if (version === sheetVersion) {
+        if (archived) {
+          closeDoc(true);
+          notify('Card archived.');
+        } else {
+          showCard(saved);
+          sheetMessage('Card restored from archive.');
+        }
+      }
+      refresh();
+    } catch (error) {
+      if (error !== stale && version === sheetVersion) {
+        sheetMessage(message(error));
+        for (const b of actions.querySelectorAll('button')) b.disabled = false;
+      }
+    }
+  };
+  const images = topImageSection(card, version);
   actions.append(button('Edit', () => showEditor(card), 'btn', 'edit'));
   if (card.status !== 'done') actions.append(button('Mark done', () => statusAction('done'), 'btn', 'check'));
   if (card.status !== 'review')
     actions.append(button('Send to review', () => statusAction('review'), 'btn', 'review'));
   if (card.status === 'done') actions.append(button('Reopen', () => statusAction('open')));
   actions.append(
+    button('Add image', () => images.toggleUpload(), 'btn', 'image'),
+    button(
+      card.archived ? 'Restore' : 'Archive',
+      () => archiveAction(!card.archived),
+      'btn',
+      'archive',
+    ),
     button(
       'Copy link',
       async () => {
@@ -1194,7 +1491,8 @@ function showCard(card) {
       'link',
     ),
   );
-  detail.append(meta, renderBody(card.body || ''), actions, commentSection(card, version), imageSection(card, version));
+  // Images sit right at the top of the document, above the rendered Markdown body.
+  detail.append(meta, actions, images.uploadPanel, images.section, renderBody(card.body || ''), commentSection(card, version));
 }
 function commentSection(card, version) {
   const section = node('section', 'comments-section'),
@@ -1280,33 +1578,45 @@ function safeImageURL(value) {
     return null;
   }
 }
-function imageSection(card, version) {
-  const section = node('section', 'images'),
-    head = node('div', 'image-head'),
-    gallery = node('div', 'gallery');
-  const input = node('input');
-  input.type = 'file';
-  input.accept = 'image/png,image/jpeg,image/webp';
-  input.hidden = true;
-  input.multiple = true;
-  const upload = button('Add image', () => input.click(), 'btn', 'image');
-  head.append(node('h3', '', 'Images'), upload);
-  section.append(head, node('p', 'help', 'JPEG, PNG, or WebP · up to 3 MiB each'), input, gallery);
+function topImageSection(card, version) {
+  const section = node('section', 'doc-images');
+  section.hidden = true;
+  const gallery = node('div', 'doc-gallery');
+  section.append(gallery);
+
+  const uploadPanel = node('div', 'upload-panel');
+  uploadPanel.hidden = true;
+  const captionInput = node('input');
+  captionInput.type = 'text';
+  captionInput.maxLength = 500;
+  captionInput.placeholder = 'Optional caption for this image…';
+  captionInput.setAttribute('aria-label', 'Image caption');
+  const fileInput = node('input');
+  fileInput.type = 'file';
+  fileInput.accept = 'image/png,image/jpeg,image/webp';
+  fileInput.hidden = true;
+  fileInput.multiple = true;
+  const pickBtn = button('Choose image…', () => fileInput.click(), 'btn primary', 'image');
+  const cancelBtn = button('Close', () => { uploadPanel.hidden = true; }, 'btn');
+  const row = node('div', 'upload-row');
+  row.append(captionInput, pickBtn, cancelBtn);
+  uploadPanel.append(row, node('p', 'help', 'JPEG, PNG, or WebP · up to 3 MiB each'), fileInput);
+
   let revision = 0;
   const fetchImages = async () => {
     const ticket = ++revision;
-    gallery.replaceChildren(node('p', 'help', 'Loading images…'));
     try {
       const { images } = await request(`${cardAPI(card.id)}/images`);
       if (version !== sheetVersion || ticket !== revision) return;
       gallery.replaceChildren();
+      gallery.classList.toggle('single', images.length === 1);
       for (const item of images) {
         const url = safeImageURL(item.url);
         if (!url) continue;
-        const figure = node('figure'),
+        const figure = node('figure', 'doc-figure'),
           img = node('img');
         img.loading = 'lazy';
-        img.alt = item.name || 'Card attachment';
+        img.alt = item.caption || item.name || 'Card attachment';
         img.addEventListener('error', () => {
           if (version === sheetVersion) {
             img.alt = `Image unavailable: ${item.name || 'attachment'}`;
@@ -1322,29 +1632,84 @@ function imageSection(card, version) {
           },
           'image-zoom',
         );
-        zoom.setAttribute('aria-label', `Enlarge ${item.name || 'image'}`);
+        zoom.setAttribute('aria-label', `Enlarge ${item.caption || item.name || 'image'}`);
         zoom.setAttribute('aria-pressed', 'false');
         zoom.append(img);
-        figure.append(zoom, node('figcaption', '', item.name));
+
+        const capBar = node('figcaption', 'doc-caption-bar');
+        const capText = node(
+          'span',
+          `doc-caption-text${item.caption ? '' : ' fallback'}`,
+          item.caption || item.name || '',
+        );
+        const editCapBtn = button(
+          item.caption ? 'Edit caption' : 'Add caption',
+          () => {
+            const existing = figure.querySelector('.doc-caption-form');
+            if (existing) { existing.remove(); return; }
+            const form = node('form', 'doc-caption-form');
+            const inp = node('input');
+            inp.type = 'text';
+            inp.maxLength = 500;
+            inp.value = item.caption || '';
+            inp.placeholder = 'Write a caption…';
+            inp.setAttribute('aria-label', 'Edit image caption');
+            const saveBtn = node('button', 'btn sm primary', 'Save');
+            saveBtn.type = 'submit';
+            form.append(inp, saveBtn, button('Cancel', () => form.remove(), 'btn sm'));
+            figure.append(form);
+            inp.focus();
+            form.addEventListener('submit', async (e) => {
+              e.preventDefault();
+              if (saveBtn.disabled) return;
+              saveBtn.disabled = true;
+              try {
+                const { image: updated } = await request(
+                  `${cardAPI(card.id)}/images/${encodeURIComponent(item.id)}`,
+                  json('PATCH', { caption: inp.value.trim() || null }),
+                );
+                if (version === sheetVersion) {
+                  item.caption = updated.caption;
+                  capText.textContent = updated.caption || item.name || '';
+                  capText.className = `doc-caption-text${updated.caption ? '' : ' fallback'}`;
+                  editCapBtn.textContent = updated.caption ? 'Edit caption' : 'Add caption';
+                  img.alt = updated.caption || item.name || 'Card attachment';
+                  form.remove();
+                  sheetMessage('Caption saved.');
+                }
+              } catch (error) {
+                if (error !== stale && version === sheetVersion) {
+                  saveBtn.disabled = false;
+                  sheetMessage(message(error));
+                }
+              }
+            });
+          },
+          'btn sm ghost',
+        );
+        capBar.append(capText, editCapBtn);
+        figure.append(zoom, capBar);
         gallery.append(figure);
       }
-      if (!gallery.hasChildNodes()) gallery.append(node('p', 'help', 'No images attached.'));
+      section.hidden = !gallery.hasChildNodes();
     } catch (error) {
       if (error !== stale && version === sheetVersion && ticket === revision) {
         const msg = message(error);
         if (/not configured/i.test(msg)) {
-          upload.disabled = true;
-          gallery.replaceChildren(node('p', 'help', 'Image attachments are not configured for this workspace.'));
+          pickBtn.disabled = true;
+          section.hidden = true;
         } else {
+          section.hidden = false;
           gallery.replaceChildren(node('p', 'error-text', msg), button('Retry images', fetchImages));
         }
       }
     }
   };
-  input.addEventListener('change', async () => {
-    const files = Array.from(input.files);
+  fileInput.addEventListener('change', async () => {
+    const files = Array.from(fileInput.files);
     if (!files.length) return;
-    upload.disabled = true;
+    pickBtn.disabled = true;
+    const caption = captionInput.value.trim();
     let sent = 0;
     try {
       for (const file of files) {
@@ -1353,29 +1718,38 @@ function imageSection(card, version) {
           throw new Error('Choose a JPEG, PNG, or WebP image.');
         if (file.size > 3 * 1024 * 1024) throw new Error(`${file.name} is larger than 3 MiB.`);
         sheetMessage(`Uploading ${sent + 1} of ${files.length}…`);
-        await request(`${cardAPI(card.id)}/images`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': file.type || 'application/octet-stream',
-            'x-filename': encodeURIComponent(file.name),
-          },
-          body: file,
-        });
+        const headers = {
+          'Content-Type': file.type || 'application/octet-stream',
+          'x-filename': encodeURIComponent(file.name),
+        };
+        if (caption) headers['x-caption'] = encodeURIComponent(caption);
+        await request(`${cardAPI(card.id)}/images`, { method: 'POST', headers, body: file });
         ++sent;
       }
-      if (version === sheetVersion) sheetMessage(`${sent === 1 ? 'Image' : `${sent} images`} attached.`);
+      if (version === sheetVersion) {
+        captionInput.value = '';
+        uploadPanel.hidden = true;
+        sheetMessage(`${sent === 1 ? 'Image' : `${sent} images`} attached.`);
+      }
     } catch (error) {
       if (error !== stale && version === sheetVersion) sheetMessage(message(error));
     } finally {
       if (version === sheetVersion) {
-        upload.disabled = false;
-        input.value = '';
+        pickBtn.disabled = false;
+        fileInput.value = '';
         if (sent) fetchImages();
       }
     }
   });
   fetchImages();
-  return section;
+  return {
+    section,
+    uploadPanel,
+    toggleUpload() {
+      uploadPanel.hidden = !uploadPanel.hidden;
+      if (!uploadPanel.hidden) captionInput.focus();
+    },
+  };
 }
 function field(label, input) {
   const wrap = node('div', 'field'),
@@ -1589,7 +1963,7 @@ function showNewProject() {
   const buttons = node('div', 'form-bottom'),
     save = node('button', 'btn primary', 'Create project');
   save.type = 'submit';
-  buttons.append(button('Cancel', () => closeSheet()), save);
+  buttons.append(button('Cancel', () => closeDialog()), save);
   form.append(fields, buttons);
   $('detail').append(form);
   nameInput.focus();
@@ -1603,7 +1977,7 @@ function showNewProject() {
       const { project } = await request('/api/projects', json('POST', { name }));
       if (version === sheetVersion) {
         state.project = project.name;
-        closeSheet();
+        closeDialog();
         notify(`Switched to ${project.name}.`);
       }
       refresh();
@@ -1617,7 +1991,7 @@ function showNewProject() {
 }
 function showEditor(card) {
   const version = ++sheetVersion;
-  sheet(card ? 'Edit card' : 'New card');
+  docSheet(card ? 'Edit card' : 'New card');
   const form = node('form'),
     fields = node('div', 'fields');
   const title = editorInput('input', 'title', card?.title);
@@ -1626,8 +2000,8 @@ function showEditor(card) {
   title.placeholder = 'Give this card a title';
   const body = editorInput('textarea', 'body', card?.body);
   body.maxLength = 20000;
-  body.rows = 5;
-  body.placeholder = 'Write your notes, plan, or checklist (- [ ] item)…';
+  body.rows = 10;
+  body.placeholder = 'Write Markdown notes, headings, tables, code blocks, or checklists (- [ ] item)…';
   const bodyField = field('Body', body),
     hint = node('p', 'help', 'Paste a card link into your notes, or use [label](/?card=id).');
   hint.id = 'link-hint';
@@ -1697,11 +2071,11 @@ function showEditor(card) {
     save = node('button', 'btn primary', 'Save card');
   save.type = 'submit';
   buttons.append(
-    button('Cancel', () => (card ? showCard(card) : closeSheet())),
+    button('Cancel', () => (card ? showCard(card) : closeDoc(true))),
     save,
   );
   form.append(fields, buttons);
-  $('detail').append(form);
+  $('doc-detail').append(form);
   title.focus();
   title.addEventListener('input', () => title.setCustomValidity(''));
   form.addEventListener('submit', async (e) => {
