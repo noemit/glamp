@@ -6,6 +6,8 @@
 BEGIN;
 GRANT USAGE ON SCHEMA glamp TO glamp_app;
 GRANT SELECT, INSERT, UPDATE ON glamp.cards TO glamp_app;
+GRANT SELECT, INSERT, UPDATE ON glamp.agent_profiles TO glamp_app;
+GRANT SELECT, INSERT ON glamp.card_comments TO glamp_app;
 GRANT SELECT, INSERT ON glamp.card_images TO glamp_app;
 GRANT SELECT, INSERT, UPDATE, DELETE ON glamp.push_subscriptions TO glamp_app;
 CREATE POLICY backend_subscriptions ON glamp.push_subscriptions

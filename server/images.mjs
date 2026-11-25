@@ -84,7 +84,7 @@ function storeFor(cardId) {
     return localStore(GLAMP_DATA_DIR || '.glamp', cardId);
   }
   if (![url, Bucket, endpoint, region, accessKeyId, secretAccessKey].every(Boolean) || !/^https:\/\//i.test(endpoint)) {
-    throw Object.assign(new Error('Image storage not configured'), { status: 503 });
+    throw Object.assign(new Error('Image storage not configured'), { status: 503, publicMessage: 'Image storage is not configured.' });
   }
   cloud ??= { sql: neon(url), s3: new S3Client({ endpoint, region, forcePathStyle: true,
     credentials: { accessKeyId, secretAccessKey }, requestChecksumCalculation: 'WHEN_REQUIRED' }) };

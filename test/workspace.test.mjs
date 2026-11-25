@@ -51,6 +51,16 @@ test('private workspace: agent submits a plan; owner reviews it; agent sees Done
   assert.match(complete.headers.get('cache-control'),/no-store/);
   process.env.GLAMP_AGENT_TOKEN_HASHES = '';
   assert.equal((await req(url,'GET',undefined,auth)).status,401);
+  // Plain GLAMP_AGENT_TOKEN password (15+ chars) works for agent API routes without granting owner access.
+  process.env.GLAMP_AGENT_TOKEN = 'too-short-14ch';
+  assert.equal((await req(url,'GET',undefined,{authorization:'Bearer too-short-14ch'})).status,401);
+  const agentPassword = 'shared-agent-password-2026';
+  process.env.GLAMP_AGENT_TOKEN = agentPassword;
+  assert.equal((await req(url,'GET',undefined,{authorization:`Bearer ${agentPassword}`})).status,200);
+  assert.equal((await req('/api/session','POST',{token:agentPassword})).status,401);
+  assert.equal((await req('/api/push/anything','GET',undefined,{authorization:`Bearer ${agentPassword}`})).status,403);
+  delete process.env.GLAMP_AGENT_TOKEN;
+  assert.equal((await req(url,'GET',undefined,{authorization:`Bearer ${agentPassword}`})).status,401);
   process.env.GLAMP_OWNER_TOKEN = randomBytes(32).toString('hex');
   assert.equal((await req(url,'GET',undefined,{cookie})).status,401);
 });

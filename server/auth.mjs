@@ -6,8 +6,15 @@ const cookie = 'glamp_session';
 const sha = value => createHash('sha256').update(value).digest();
 const equal = (left, right) => timingSafeEqual(sha(left), sha(right));
 const ownerKey = () => (process.env.GLAMP_OWNER_TOKEN || '').length >= 15 ? process.env.GLAMP_OWNER_TOKEN : null;
-const validAgent = token => (process.env.GLAMP_AGENT_TOKEN_HASHES || '').split(',').some(hash =>
-  /^[0-9a-f]{64}$/i.test(hash.trim()) && timingSafeEqual(sha(token), Buffer.from(hash.trim(), 'hex')));
+const validAgent = token => {
+  const plainMatch = (process.env.GLAMP_AGENT_TOKEN || '').split(',').some(secret => {
+    const candidate = secret.trim();
+    return candidate.length >= 15 && equal(token, candidate);
+  });
+  if (plainMatch) return true;
+  return (process.env.GLAMP_AGENT_TOKEN_HASHES || '').split(',').some(hash =>
+    /^[0-9a-f]{64}$/i.test(hash.trim()) && timingSafeEqual(sha(token), Buffer.from(hash.trim(), 'hex')));
+};
 const sign = payload => createHmac('sha256', ownerKey()).update(`glamp-session-v1:${payload}`).digest('base64url');
 const secure = () => process.env.NODE_ENV === 'production' || Boolean(process.env.VERCEL);
 const cookieOptions = () => ({ httpOnly: true, sameSite: 'strict', path: '/', secure: secure() });

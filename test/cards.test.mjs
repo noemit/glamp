@@ -29,6 +29,7 @@ describe('cards HTTP contract', { concurrency: false }, () => {
     cardExists = cards.cardExists;
     app.locals.notifyReview = async () => {};
     app.use('/api/cards', cards.cardsRouter);
+    app.use('/api/agents', cards.agentsRouter);
     server = app.listen(0, '127.0.0.1');
     await once(server, 'listening');
     base = `http://127.0.0.1:${server.address().port}/api/cards`;
@@ -84,7 +85,10 @@ describe('cards HTTP contract', { concurrency: false }, () => {
     assert.equal(first.startingDate, null);
     assert.equal(first.endingDate, null);
     assert.equal(first.status, 'open');
-    assert.deepEqual(Object.keys(first).sort(), ['id', 'title', 'body', 'isTask', 'status', 'startingDate', 'endingDate', 'createdAt', 'updatedAt'].sort());
+    assert.equal(first.author, null);
+    assert.deepEqual(first.contributors, []);
+    assert.equal(first.commentCount, 0);
+    assert.deepEqual(Object.keys(first).sort(), ['id', 'title', 'body', 'isTask', 'status', 'startingDate', 'endingDate', 'author', 'contributors', 'commentCount', 'createdAt', 'updatedAt'].sort());
     for (const stamp of [first.createdAt, first.updatedAt]) assert.equal(new Date(stamp).toISOString(), stamp);
     assert.equal(await cardExists(first.id), true);
     assert.deepEqual(await get(first.id), first);
@@ -265,5 +269,69 @@ describe('cards HTTP contract', { concurrency: false }, () => {
     assert.equal(edited.body, 'Saved despite rejection');
     assert.deepEqual(await get(open.id), edited);
     assert.equal(notify.mock.callCount(), 2);
+  });
+
+  it('tracks self-identified agent authors, profiles, comments, and author filtering', async () => {
+    const origin = base.replace(/\/api\/cards$/, '');
+    const createdRes = await fetch(base, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Agent-Name': 'Scout' },
+      body: JSON.stringify({ title: 'Competitor research', body: 'Initial findings' }),
+    });
+    assert.equal(createdRes.status, 201);
+    const { card } = await createdRes.json();
+    assert.equal(card.author, 'Scout');
+    assert.deepEqual(card.contributors, ['Scout']);
+    assert.equal(card.commentCount, 0);
+
+    // Update Scout's profile with role & color
+    const profRes = await fetch(`${origin}/api/agents`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'Scout', role: 'Research & summaries', color: 'sky' }),
+    });
+    assert.equal(profRes.status, 200);
+    const { agent } = await profRes.json();
+    assert.equal(agent.name, 'Scout');
+    assert.equal(agent.role, 'Research & summaries');
+    assert.equal(agent.color, 'sky');
+
+    // Second agent leaves a comment
+    const commentRes = await fetch(`${base}/${card.id}/comments`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Agent-Name': 'Planner' },
+      body: JSON.stringify({ body: 'Turned this into milestones.' }),
+    });
+    assert.equal(commentRes.status, 201);
+    const { comment } = await commentRes.json();
+    assert.equal(comment.author, 'Planner');
+    assert.equal(comment.body, 'Turned this into milestones.');
+
+    // Reading comments returns chronological list
+    const commentsList = await (await fetch(`${base}/${card.id}/comments`)).json();
+    assert.equal(commentsList.comments.length, 1);
+    assert.equal(commentsList.comments[0].id, comment.id);
+
+    // Card now includes both contributors and commentCount = 1
+    const updatedCard = await get(card.id);
+    assert.deepEqual(updatedCard.contributors, ['Scout', 'Planner']);
+    assert.equal(updatedCard.commentCount, 1);
+
+    // Filtering by either author (creator or commenter) finds the card
+    const byScout = await (await fetch(`${base}?author=scout`)).json();
+    assert.ok(byScout.cards.some(c => c.id === card.id));
+    const byPlanner = await (await fetch(`${base}?author=Planner`)).json();
+    assert.ok(byPlanner.cards.some(c => c.id === card.id));
+    const byNobody = await (await fetch(`${base}?author=UnknownAgent`)).json();
+    assert.equal(byNobody.cards.length, 0);
+
+    // Profiles list exposes both Scout and auto-created Planner with counts
+    const agentsList = await (await fetch(`${origin}/api/agents`)).json();
+    const scout = agentsList.agents.find(a => a.name === 'Scout');
+    const planner = agentsList.agents.find(a => a.name === 'Planner');
+    assert.equal(scout.role, 'Research & summaries');
+    assert.equal(scout.color, 'sky');
+    assert.equal(scout.cardCount, 1);
+    assert.equal(planner.commentCount, 1);
   });
 });

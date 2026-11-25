@@ -14,6 +14,7 @@ const state = {
   epoch: 0,
   view: 'docs',
   cards: [],
+  agents: new Map(),
   loaded: false,
   loadError: '',
   month: new Date(),
@@ -23,8 +24,11 @@ const state = {
     type: 'all',
     time: 'all',
     status: 'all',
+    agent: 'all',
   },
 };
+const agentColors = ['slate', 'sky', 'green', 'amber', 'rose', 'teal'];
+const dateTimeFormat = new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
 let listVersion = 0,
   sheetVersion = 0,
   authVersion = 0;
@@ -124,6 +128,30 @@ function timePill(card) {
   const info = timePillInfo(card);
   return info ? node('span', `pill ${info.cls}`, info.label) : null;
 }
+function agentColor(name) {
+  const profile = state.agents.get(name.toLowerCase());
+  if (profile && agentColors.includes(profile.color)) return profile.color;
+  let hash = 0;
+  for (const ch of name.toLowerCase()) hash = (hash * 31 + ch.codePointAt(0)) >>> 0;
+  return agentColors[hash % agentColors.length];
+}
+function initials(name) {
+  const parts = name.trim().split(/[\s_-]+/).filter(Boolean);
+  if (parts.length >= 2) return (parts[0][0] + parts[1][0]).toUpperCase();
+  return name.trim().slice(0, 2).toUpperCase();
+}
+function avatarBadge(name, large = false) {
+  const el = node('span', `avatar color-${agentColor(name)}${large ? ' lg' : ''}`, initials(name));
+  const profile = state.agents.get(name.toLowerCase());
+  el.title = profile?.role ? `${name} · ${profile.role}` : name;
+  el.setAttribute('aria-hidden', 'true');
+  return el;
+}
+function avatarStack(names) {
+  const stack = node('span', 'avatar-stack');
+  for (const name of names.slice(0, 4)) stack.append(avatarBadge(name));
+  return stack;
+}
 function message(error) {
   return error instanceof TypeError
     ? 'Could not reach the workspace. Check your connection and try again.'
@@ -167,10 +195,37 @@ const json = (method, value) => ({
 });
 
 function resetFilters() {
-  state.filters = { type: 'all', time: 'all', status: 'all' };
+  state.filters = { type: 'all', time: 'all', status: 'all', agent: 'all' };
   $('filter-type').value = 'all';
   $('filter-time').value = 'all';
   $('filter-status').value = 'all';
+  $('filter-agent').value = 'all';
+  syncFilterChips();
+}
+
+function syncAgentOptions() {
+  const select = $('filter-agent');
+  const names = new Map();
+  for (const profile of state.agents.values()) names.set(profile.name.toLowerCase(), profile.name);
+  for (const card of state.cards) {
+    for (const name of card.contributors || (card.author ? [card.author] : [])) {
+      if (!names.has(name.toLowerCase())) names.set(name.toLowerCase(), name);
+    }
+  }
+  const sorted = [...names.values()].sort((a, b) => a.localeCompare(b));
+  const current = state.filters.agent;
+  select.replaceChildren(node('option', '', 'All'));
+  select.firstElementChild.value = 'all';
+  for (const name of sorted) {
+    const opt = node('option', '', name);
+    opt.value = name.toLowerCase();
+    select.append(opt);
+  }
+  if (current !== 'all' && !names.has(current)) {
+    state.filters.agent = 'all';
+  }
+  select.value = state.filters.agent;
+  $('chip-agent-wrap').hidden = sorted.length === 0 && state.filters.agent === 'all';
   syncFilterChips();
 }
 
@@ -182,10 +237,12 @@ function syncFilterChips() {
   $('chip-type-wrap').classList.toggle('active', !isTodos && state.filters.type !== 'all');
   $('chip-time-wrap').classList.toggle('active', state.filters.time !== 'all');
   $('chip-status-wrap').classList.toggle('active', !isBoard && state.filters.status !== 'all');
+  $('chip-agent-wrap').classList.toggle('active', state.filters.agent !== 'all');
   const active =
     (!isTodos && state.filters.type !== 'all') ||
     state.filters.time !== 'all' ||
-    (!isBoard && state.filters.status !== 'all');
+    (!isBoard && state.filters.status !== 'all') ||
+    state.filters.agent !== 'all';
   $('filter-clear').hidden = !active;
 }
 
@@ -199,6 +256,7 @@ function lock(reason = '') {
   state.owner = false;
   state.loaded = false;
   state.cards = [];
+  state.agents = new Map();
   state.loadError = '';
   state.view = 'docs';
   state.month = new Date();
@@ -345,6 +403,11 @@ $('filter-status').addEventListener('change', (e) => {
   syncFilterChips();
   render();
 });
+$('filter-agent').addEventListener('change', (e) => {
+  state.filters.agent = e.target.value;
+  syncFilterChips();
+  render();
+});
 $('filter-clear').addEventListener('click', () => {
   resetFilters();
   render();
@@ -358,10 +421,15 @@ async function refresh() {
   state.loadError = '';
   render();
   try {
-    const { cards } = await request(`/api/cards?q=${encodeURIComponent(query)}`);
+    const [cardsRes, agentsRes] = await Promise.all([
+      request(`/api/cards?q=${encodeURIComponent(query)}`),
+      request('/api/agents').catch(() => ({ agents: [] })),
+    ]);
     if (version !== listVersion) return;
-    state.cards = cards;
+    state.cards = cardsRes.cards;
+    state.agents = new Map((agentsRes?.agents || []).map((a) => [a.name.toLowerCase(), a]));
     state.loaded = true;
+    syncAgentOptions();
     render();
   } catch (error) {
     if (error !== stale && version === listVersion && state.owner) {
@@ -404,7 +472,8 @@ function hasActiveFilters() {
     Boolean($('search').value.trim()) ||
     (!isTodos && state.filters.type !== 'all') ||
     state.filters.time !== 'all' ||
-    (!isBoard && state.filters.status !== 'all')
+    (!isBoard && state.filters.status !== 'all') ||
+    state.filters.agent !== 'all'
   );
 }
 
@@ -419,6 +488,10 @@ function applyFilters(cards) {
     if (state.view !== 'board' && state.filters.status !== 'all' && card.status !== state.filters.status)
       return false;
     if (state.filters.time !== 'all' && cardTimeBucket(card, now) !== state.filters.time) return false;
+    if (state.filters.agent !== 'all') {
+      const members = card.contributors || (card.author ? [card.author] : []);
+      if (!members.some((name) => name.toLowerCase() === state.filters.agent)) return false;
+    }
     return true;
   });
 }
@@ -563,13 +636,28 @@ function docsView(cards) {
       toggleTaskCheckbox(card, check);
       footer.append(check);
     }
-    const kindText = card.isTask ? 'Task' : 'Note';
-    const dateLabel = scheduleText(card) || `Created ${displayDate(new Date(card.createdAt))}`;
-    footer.append(
-      node('span', '', kindText),
-      node('span', 'card-footer-dot', '·'),
-      node('span', 'card-footer-strong', dateLabel),
-    );
+    const members = card.contributors || (card.author ? [card.author] : []);
+    if (members.length) {
+      footer.append(
+        avatarStack(members),
+        node('span', '', members.length > 1 ? 'With' : 'By'),
+        node('span', 'card-footer-strong', members.join(', ')),
+      );
+      if (card.commentCount > 0) {
+        footer.append(
+          node('span', 'card-footer-dot', '·'),
+          node('span', '', `${card.commentCount} ${card.commentCount === 1 ? 'comment' : 'comments'}`),
+        );
+      }
+    } else {
+      const kindText = card.isTask ? 'Task' : 'Note';
+      const dateLabel = scheduleText(card) || `Created ${displayDate(new Date(card.createdAt))}`;
+      footer.append(
+        node('span', '', kindText),
+        node('span', 'card-footer-dot', '·'),
+        node('span', 'card-footer-strong', dateLabel),
+      );
+    }
     item.append(footer);
 
     feed.append(item);
@@ -972,6 +1060,11 @@ function showCard(card) {
   if (tp) top.append(tp);
   heading.before(top);
   const meta = node('div', 'detail-meta');
+  if (card.author) {
+    const a = node('span');
+    a.append(avatarBadge(card.author), card.author);
+    meta.append(a);
+  }
   meta.append(node('span', '', `Created ${displayDate(new Date(card.createdAt))}`));
   if (card.startingDate || card.endingDate) {
     const s = node('span');
@@ -1027,7 +1120,76 @@ function showCard(card) {
       'link',
     ),
   );
-  detail.append(meta, renderBody(card.body || ''), actions, imageSection(card, version));
+  detail.append(meta, renderBody(card.body || ''), actions, commentSection(card, version), imageSection(card, version));
+}
+function commentSection(card, version) {
+  const section = node('section', 'comments-section'),
+    head = node('div', 'comments-head'),
+    count = node('span', 'count', card.commentCount ? String(card.commentCount) : ''),
+    list = node('div', 'comment-list');
+  head.append(node('h3', '', 'Comments'), count);
+  const form = node('form', 'comment-form'),
+    input = node('textarea');
+  input.maxLength = 10000;
+  input.rows = 2;
+  input.placeholder = 'Leave a comment or reply to your agents…';
+  input.setAttribute('aria-label', 'Add a comment');
+  const submit = node('button', 'btn primary', 'Post comment');
+  submit.type = 'submit';
+  const formActions = node('div', 'comment-form-actions');
+  formActions.append(submit);
+  form.append(input, formActions);
+  section.append(head, list, form);
+
+  let revision = 0;
+  const fetchComments = async () => {
+    const ticket = ++revision;
+    list.replaceChildren(node('p', 'help', 'Loading comments…'));
+    try {
+      const { comments } = await request(`${cardAPI(card.id)}/comments`);
+      if (version !== sheetVersion || ticket !== revision) return;
+      count.textContent = comments.length ? String(comments.length) : '';
+      list.replaceChildren();
+      if (!comments.length) {
+        list.append(node('p', 'help', 'No comments yet.'));
+        return;
+      }
+      for (const c of comments) {
+        const item = node('article', 'comment-item');
+        const top = node('div', 'comment-top');
+        const profile = state.agents.get(c.author.toLowerCase());
+        top.append(avatarBadge(c.author, true), node('span', 'comment-author', c.author));
+        if (profile?.role) top.append(node('span', 'comment-role', profile.role));
+        const stamp = new Date(c.createdAt);
+        top.append(node('span', 'comment-time', Number.isFinite(stamp.valueOf()) ? dateTimeFormat.format(stamp) : ''));
+        item.append(top, node('p', 'comment-body', c.body));
+        list.append(item);
+      }
+    } catch (error) {
+      if (error !== stale && version === sheetVersion && ticket === revision)
+        list.replaceChildren(node('p', 'error-text', message(error)), button('Retry comments', fetchComments));
+    }
+  };
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const text = input.value.trim();
+    if (!text || submit.disabled) return;
+    submit.disabled = true;
+    try {
+      await request(`${cardAPI(card.id)}/comments`, json('POST', { body: text }));
+      if (version === sheetVersion) {
+        input.value = '';
+        await fetchComments();
+      }
+      refresh();
+    } catch (error) {
+      if (error !== stale && version === sheetVersion) sheetMessage(message(error));
+    } finally {
+      if (version === sheetVersion) submit.disabled = false;
+    }
+  });
+  fetchComments();
+  return section;
 }
 function safeImageURL(value) {
   if (typeof value !== 'string' || !value.trim()) return null;
@@ -1094,8 +1256,15 @@ function imageSection(card, version) {
       }
       if (!gallery.hasChildNodes()) gallery.append(node('p', 'help', 'No images attached.'));
     } catch (error) {
-      if (error !== stale && version === sheetVersion && ticket === revision)
-        gallery.replaceChildren(node('p', 'error-text', message(error)), button('Retry images', fetchImages));
+      if (error !== stale && version === sheetVersion && ticket === revision) {
+        const msg = message(error);
+        if (/not configured/i.test(msg)) {
+          upload.disabled = true;
+          gallery.replaceChildren(node('p', 'help', 'Image attachments are not configured for this workspace.'));
+        } else {
+          gallery.replaceChildren(node('p', 'error-text', msg), button('Retry images', fetchImages));
+        }
+      }
     }
   };
   input.addEventListener('change', async () => {
@@ -1182,6 +1351,9 @@ function showEditor(card) {
   starting.type = 'date';
   const ending = editorInput('input', 'endingDate', card?.endingDate);
   ending.type = 'date';
+  const author = editorInput('input', 'author', card?.author);
+  author.maxLength = 60;
+  author.placeholder = 'Optional (e.g. Owner or agent name)';
   const limits = () => {
     ending.min = starting.value;
     starting.max = ending.value;
@@ -1193,7 +1365,7 @@ function showEditor(card) {
   options.append(field('Status', status), type);
   const dates = node('div', 'two-col');
   dates.append(field('Start date (optional)', starting), field('End date (optional)', ending));
-  fields.append(field('Title', title), bodyField, options, dates);
+  fields.append(field('Title', title), bodyField, options, dates, field('Author (optional)', author));
   const buttons = node('div', 'form-bottom'),
     save = node('button', 'btn primary', 'Save card');
   save.type = 'submit';
@@ -1220,6 +1392,7 @@ function showEditor(card) {
       isTask: isTask.checked,
       startingDate: starting.value || null,
       endingDate: ending.value || null,
+      author: author.value.trim() || null,
     };
     // Send only edited fields, so fixing a typo doesn't undo an agent's status change.
     const edit = card
