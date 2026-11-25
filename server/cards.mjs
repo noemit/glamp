@@ -171,7 +171,25 @@ cardsRouter.patch('/:id', parseJson, async (req, res) => {
   }
   throw new CardError(409, 'Card changed concurrently. Please retry the edit.');
 });
+// Neon errors can include private data. Expose only fixed messages for known
+// setup failures, never the original message, query, connection URL, or hints.
+const dbSetupErrors = new Map([
+  ['42P01', 'Glamp cannot find its cards table. Run sql/schema.sql in the Neon database and branch connected to this deployment.'],
+  ['3F000', 'Glamp cannot find its schema. Run sql/schema.sql in the Neon database and branch connected to this deployment.'],
+  ['42501', 'The connected database role lacks the required permission for glamp.cards. Check the schema and table grants in sql/access.example.sql.'],
+  ['42703', 'The cards table does not match this version of Glamp. Compare its columns with sql/schema.sql.'],
+  ['28P01', 'Neon rejected the database credentials. Check the Production database connection in Vercel.'],
+  ['28000', 'Neon refused database access. Check the Production database connection in Vercel.'],
+  ['3D000', 'Neon cannot find the database named in the connection string. Check the database selected for this deployment.'],
+]);
 cardsRouter.use((err, _req, res, next) => {
+  if (err.name === 'NeonDbError') {
+    const message = dbSetupErrors.get(err.code);
+    if (message || err.sourceError) {
+      console.error('Glamp cards database error:', message ? err.code : 'transport');
+      return res.status(503).json({error: message || 'Glamp could not reach Neon. Check the database connection for this deployment and retry.'});
+    }
+  }
   if (err instanceof CardError) return res.status(err.status).json({ error: err.message });
   if (err.type === 'entity.parse.failed') return res.status(400).json({ error: 'Invalid JSON.' });
   if (err.type === 'entity.too.large') return res.status(413).json({ error: 'Request is too large.' });

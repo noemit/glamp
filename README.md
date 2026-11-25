@@ -53,6 +53,16 @@ For an agent outside the checkout, make the CLI available with `npm link` from t
 4. Set `GLAMP_OWNER_TOKEN` to a new strong random secret (15+ characters). For each agent, run `node scripts/agent-key.mjs` **locally**. Send the token to that agent privately; set `GLAMP_AGENT_TOKEN_HASHES` on Vercel to the comma-separated hashes only. Remove one hash and redeploy to revoke that agent. Rotate `GLAMP_OWNER_TOKEN` to invalidate all owner sessions.
 5. To enable Web Push, set `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`, and `VAPID_SUBJECT` (a real `mailto:` contact or HTTPS contact URL). Use a stable keypair for the deployment. Redeploy after setting environment variables. Never commit `.env`, push subscriptions, database URLs, or bucket credentials. Preview and production should not share a writable database branch/bucket or push credentials.
 
+### If sign-in works but cards won't load
+
+Sign-in checks the owner token, not Neon. In Neon’s SQL Editor, choose the **same branch and database as the Vercel deployment** and run this read-only check:
+
+```sql
+SELECT to_regclass('glamp.cards') AS cards_table;
+```
+
+If it returns `NULL`, apply [`sql/schema.sql`](sql/schema.sql) there and reload. If the table exists but the app reports a permission error, check the **role used by the deployment** against [`sql/access.example.sql`](sql/access.example.sql); the SQL Editor can use a different role. Listing and creating text cards do not depend on object storage or push configuration.
+
 ### Verify phone notifications
 
 Open the HTTPS deployment and sign in. On iOS/iPadOS 16.4+, **Add to Home Screen and launch from the installed app first**. Tap the push opt-in and grant permission. From an agent, submit a card with `--status review`. Tapping the notification should open that exact card. Move it to Done and read it back with the CLI. Push is triggered on *entering* review, not on every edit. Actual delivery depends on device permissions and the push service; a failed notification does not undo a saved card.
