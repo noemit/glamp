@@ -780,7 +780,6 @@ function hasActiveFilters() {
 
 function applyFilters(cards, { ignoreUnread = false, ignoreTime = false } = {}) {
   const now = new Date();
-  const today = dayKey(now);
   return cards.filter((card) => {
     if (state.project === '__unassigned__') {
       if (card.project) return false;
@@ -797,10 +796,6 @@ function applyFilters(cards, { ignoreUnread = false, ignoreTime = false } = {}) 
     if (!ignoreTime) {
       if (state.view === 'todos' && state.todoDay) {
         if (!entriesOn([card], state.todoDay).length) return false;
-      } else if (state.view === 'todos' && state.filters.time === 'today') {
-        const isDueToday = cardTimeBucket(card, now) === 'today';
-        const isCreatedToday = dayKey(new Date(card.createdAt)) === today;
-        if (!isDueToday && !isCreatedToday) return false;
       } else if (state.filters.time !== 'all' && cardTimeBucket(card, now) !== state.filters.time) {
         return false;
       }
@@ -909,7 +904,9 @@ function render() {
     return;
   }
   const cards = applyFilters(state.cards);
-  $('card-count').textContent = String(cards.length);
+  $('card-count').textContent = String(
+    state.view === 'calendar' ? cards.filter((c) => c.startingDate || c.endingDate).length : cards.length,
+  );
   if (state.view === 'board') results.append(boardView(cards));
   else if (state.view === 'calendar') results.append(calendarView(cards));
   else if (state.view === 'todos') results.append(todoView(cards, applyFilters(state.cards, { ignoreTime: true })));
@@ -1490,19 +1487,19 @@ function todoView(cards, weekCards = cards) {
 }
 
 // Bound work to the displayed month rather than expanding a potentially years-long range.
+// Matches scheduled dates (startingDate / endingDate) only — never createdAt.
 function entriesOn(cards, day) {
   const entries = [];
   for (const card of cards) {
     const start = card.startingDate || card.endingDate,
       end = card.endingDate || card.startingDate;
-    const created = dayKey(new Date(card.createdAt)) === day,
-      scheduled = Boolean(start && start <= day && day <= end);
-    if (created || scheduled)
+    if (start && start <= day && day <= end) {
       entries.push({
         card,
-        scheduled,
-        reason: created && scheduled ? 'Created & scheduled' : scheduled ? 'Scheduled' : 'Created',
+        scheduled: true,
+        reason: scheduleText(card) || 'Scheduled',
       });
+    }
   }
   return entries;
 }
@@ -1592,9 +1589,9 @@ function calendarView(cards) {
     li.append(cardLink(entry.card), meta);
     ul.append(li);
   }
-  agenda.append(ul.childElementCount ? ul : node('p', 'help', 'No cards on this day.'));
+  agenda.append(ul.childElementCount ? ul : node('p', 'help', 'No scheduled cards on this day.'));
   const legend = node('div', 'legend');
-  legend.append(node('span', '', 'Created'), node('span', '', 'Scheduled'));
+  legend.append(node('span', '', 'Scheduled'), node('span', '', 'Done'));
   cal.append(grid, agenda);
   frag.append(cal, legend);
   return frag;
