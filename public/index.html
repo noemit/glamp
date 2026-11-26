@@ -85,15 +85,26 @@
         <rect x="3" y="4.5" width="18" height="4" rx="1.5" />
         <path d="M5 8.5v9.5a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8.5M10 13h4" />
       </symbol>
+      <symbol id="i-activity" viewBox="0 0 24 24">
+        <path d="M3 12h4l2.5-6 4.5 12 2.5-6H21" />
+      </symbol>
+      <symbol id="i-backlink" viewBox="0 0 24 24">
+        <path d="M9 14 4 9l5-5" />
+        <path d="M20 20v-7a4 4 0 0 0-4-4H4" />
+      </symbol>
+      <symbol id="i-refresh" viewBox="0 0 24 24">
+        <path d="M20 12a8 8 0 1 1-2.3-5.6L20 8.5" />
+        <path d="M20 4v4.5h-4.5" />
+      </symbol>
     </svg>
 
     <header class="masthead">
       <div class="shell mast-inner">
         <div class="brand-group">
-          <div class="brand">
+          <button id="brand-home" class="brand" type="button" title="Home &amp; refresh">
             <img class="brand-logo" src="/icons/glamp.svg" alt="" width="28" height="28" />
             <span class="brand-name">Glamp</span>
-          </div>
+          </button>
           <div id="project-switcher" class="project-switcher" hidden>
             <span class="project-sep" aria-hidden="true">/</span>
             <label class="project-select-wrap">
@@ -120,11 +131,17 @@
           <button data-view="calendar" type="button">
             <svg class="icon" aria-hidden="true"><use href="#i-calendar" /></svg><span>Calendar</span>
           </button>
+          <button data-view="activity" type="button">
+            <svg class="icon" aria-hidden="true"><use href="#i-activity" /></svg><span>Activity</span>
+          </button>
         </nav>
         <span id="private-label" class="pill-tag header-right">
           <svg class="icon" aria-hidden="true"><use href="#i-lock" /></svg> Private
         </span>
         <div id="account" class="header-right" hidden>
+          <button id="refresh-app" class="btn ghost" type="button" title="Hard refresh">
+            <svg class="icon" aria-hidden="true"><use href="#i-refresh" /></svg><span>Refresh</span>
+          </button>
           <button id="manage-agents" class="btn ghost" type="button">
             <svg class="icon" aria-hidden="true"><use href="#i-users" /></svg><span>Agents</span>
           </button>
@@ -221,9 +238,13 @@
                   <option value="all">All</option>
                 </select>
               </label>
+              <button id="filter-unread" class="filter-chip chip-toggle" type="button" aria-pressed="false" hidden>
+                <span class="unread-dot" aria-hidden="true"></span><span>Unread</span><span id="unread-count" class="chip-count"></span>
+              </button>
+              <button id="mark-all-read" class="chip-reset" type="button" hidden>Mark all read</button>
               <button id="filter-clear" class="chip-reset" type="button" hidden>Reset</button>
             </div>
-            <label class="search">
+            <label id="search-wrap" class="search">
               <svg class="icon" aria-hidden="true"><use href="#i-search" /></svg>
               <span class="sr-only">Search cards</span>
               <input id="search" type="search" placeholder="Search…" autocomplete="off" />
@@ -240,7 +261,10 @@
           <button id="doc-back" class="btn ghost" type="button">
             <svg class="icon" aria-hidden="true"><use href="#i-prev" /></svg><span id="doc-back-label">Back to Notes</span>
           </button>
-          <p id="doc-message" role="status" class="doc-message"></p>
+          <div class="doc-topbar-right">
+            <span id="doc-save-state" class="doc-save-state" aria-live="polite"></span>
+            <p id="doc-message" role="status" class="doc-message"></p>
+          </div>
         </div>
         <div id="doc-detail" class="doc-detail"></div>
       </section>

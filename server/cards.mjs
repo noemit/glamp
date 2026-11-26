@@ -109,7 +109,7 @@ async function openStore() {
       query: (statement, params) => sql.query(statement, params),
       dates: "to_char(starting_date, 'YYYY-MM-DD') AS starting_date, to_char(ending_date, 'YYYY-MM-DD') AS ending_date",
       table: 'glamp.cards', commentsTable: 'glamp.card_comments', profilesTable: 'glamp.agent_profiles',
-      projectsTable: 'glamp.projects', tokensTable: 'glamp.agent_tokens',
+      projectsTable: 'glamp.projects', tokensTable: 'glamp.agent_tokens', imagesTable: 'glamp.card_images',
       contains: 'strpos', now: 'statement_timestamp()', boolean: value => value,
     };
   }
@@ -192,7 +192,7 @@ async function openStore() {
       return db.prepare(statement).all(bindings);
     },
     dates: 'starting_date, ending_date', table: 'cards', commentsTable: 'card_comments',
-    profilesTable: 'agent_profiles', projectsTable: 'projects', tokensTable: 'agent_tokens',
+    profilesTable: 'agent_profiles', projectsTable: 'projects', tokensTable: 'agent_tokens', imagesTable: null,
     contains: 'instr', now, boolean: Number,
   };
 }
@@ -396,6 +396,77 @@ cardsRouter.get('/:id', async (req, res) => {
   const row = await getRow(db, req.params.id);
   const authors = await commentAuthorsFor(db, row.id);
   res.json({ card: toCard(row, authors) });
+});
+function backlinkRegex(cardId) {
+  const escaped = cardId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`(?:\\/\\?card=${escaped}(?![a-zA-Z0-9_-])|\\[\\[(?:card:)?${escaped}(?:\\|[^\\]\\n]{0,200})?\\]\\])`, 'i');
+}
+function backlinkSnippet(text, re) {
+  const match = re.exec(text);
+  if (!match) return '';
+  const start = Math.max(0, match.index - 55);
+  const end = Math.min(text.length, match.index + match[0].length + 75);
+  const slice = text.slice(start, end).replace(/\s+/g, ' ').trim();
+  const cleaned = slice
+    .replace(/\[([^\[\]]+)\]\(\/\?card=[a-zA-Z0-9_-]+\)/g, '$1')
+    .replace(/\[\[(?:card:)?[a-zA-Z0-9_-]+(?:\|([^\[\]]+))?\]\]/g, (_, label) => label || 'card')
+    .replace(/[*_`~#>]+/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return `${start > 0 ? '…' : ''}${cleaned}${end < text.length ? '…' : ''}`;
+}
+cardsRouter.get('/:id/backlinks', async (req, res) => {
+  const db = await initStore();
+  const target = await getRow(db, req.params.id);
+  const needle = target.id.toLowerCase();
+  const re = backlinkRegex(needle);
+  const [bodyRows, commentRows] = await Promise.all([
+    db.query(
+      `SELECT id, title, status, project, body, archived, updated_at
+       FROM ${db.table}
+       WHERE id <> $1 AND ${db.contains}(lower(body), $1) > 0
+       ORDER BY updated_at DESC, id`,
+      [needle],
+    ),
+    db.query(
+      `SELECT cm.card_id AS id, cm.body AS comment_body, cm.created_at AS comment_created_at,
+              c.title, c.status, c.project, c.archived, c.updated_at
+       FROM ${db.commentsTable} cm
+       JOIN ${db.table} c ON c.id = cm.card_id
+       WHERE cm.card_id <> $1 AND ${db.contains}(lower(cm.body), $1) > 0
+       ORDER BY cm.created_at DESC, cm.id`,
+      [needle],
+    ),
+  ]);
+  const seen = new Map();
+  for (const row of bodyRows) {
+    if (Boolean(row.archived)) continue;
+    if (!re.test(row.body || '')) continue;
+    seen.set(row.id, {
+      id: row.id,
+      title: row.title,
+      status: row.status,
+      project: row.project ?? null,
+      source: 'body',
+      snippet: backlinkSnippet(row.body || '', re),
+      updatedAt: new Date(row.updated_at).toISOString(),
+    });
+  }
+  for (const row of commentRows) {
+    if (Boolean(row.archived) || seen.has(row.id)) continue;
+    if (!re.test(row.comment_body || '')) continue;
+    seen.set(row.id, {
+      id: row.id,
+      title: row.title,
+      status: row.status,
+      project: row.project ?? null,
+      source: 'comment',
+      snippet: backlinkSnippet(row.comment_body || '', re),
+      updatedAt: new Date(row.updated_at).toISOString(),
+    });
+  }
+  const backlinks = [...seen.values()].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt) || a.id.localeCompare(b.id));
+  res.json({ backlinks });
 });
 const parseJson = express.json({ limit: '128kb' });
 cardsRouter.post('/', parseJson, async (req, res) => {
@@ -664,3 +735,136 @@ projectsRouter.post('/', parseJson, async (req, res) => {
   });
 });
 projectsRouter.use(handleDbError);
+
+export const activityRouter = express.Router();
+activityRouter.get('/', async (req, res) => {
+  const projectFilter = req.query.project === undefined || !String(req.query.project).trim()
+    ? null
+    : checkAuthor(String(req.query.project), 'project', false);
+  const agentFilter = req.query.agent === undefined || !String(req.query.agent).trim()
+    ? null
+    : checkAuthor(String(req.query.agent), 'agent', false);
+  const rawLimit = req.query.limit === undefined ? 60 : Number(req.query.limit);
+  if (!Number.isInteger(rawLimit) || rawLimit < 1 || rawLimit > 100) {
+    invalid('limit must be an integer between 1 and 100.');
+  }
+  const db = await initStore();
+  const [cardRows, commentRows, imageRows] = await Promise.all([
+    db.query(
+      `SELECT id, title, status, is_task, author, assignee, project, archived, created_at, updated_at, revision
+       FROM ${db.table}
+       ORDER BY updated_at DESC, id`,
+      [],
+    ),
+    db.query(
+      `SELECT cm.id, cm.card_id, cm.author, cm.body, cm.created_at,
+              c.title AS card_title, c.status AS card_status, c.project, c.assignee, c.archived
+       FROM ${db.commentsTable} cm
+       JOIN ${db.table} c ON c.id = cm.card_id
+       ORDER BY cm.created_at DESC, cm.id`,
+      [],
+    ),
+    db.imagesTable
+      ? db.query(
+          `SELECT im.id, im.card_id, im.name, im.caption, im.created_at,
+                  c.title AS card_title, c.status AS card_status, c.author AS card_author, c.project, c.assignee, c.archived
+           FROM ${db.imagesTable} im
+           JOIN ${db.table} c ON c.id = im.card_id
+           ORDER BY im.created_at DESC, im.id`,
+          [],
+        ).catch(() => [])
+      : Promise.resolve([]),
+  ]);
+
+  const latestCommentByCard = new Map();
+  for (const cm of commentRows) {
+    const ms = Date.parse(cm.created_at);
+    const prev = latestCommentByCard.get(cm.card_id);
+    if (!prev || ms > prev) latestCommentByCard.set(cm.card_id, ms);
+  }
+
+  const events = [];
+  for (const c of cardRows) {
+    if (Boolean(c.archived)) continue;
+    const createdAt = new Date(c.created_at).toISOString();
+    const updatedAt = new Date(c.updated_at).toISOString();
+    const actor = c.author || 'Owner';
+    events.push({
+      id: `created:${c.id}`,
+      type: 'card.created',
+      timestamp: createdAt,
+      actor,
+      cardId: c.id,
+      cardTitle: c.title,
+      cardStatus: c.status,
+      isTask: Boolean(c.is_task),
+      project: c.project ?? null,
+      assignee: c.assignee ?? null,
+      detail: null,
+    });
+    const updatedMs = Date.parse(updatedAt);
+    const lastCommentMs = latestCommentByCard.get(c.id) || 0;
+    if (Number(c.revision) > 0 && (lastCommentMs === 0 || Math.abs(updatedMs - lastCommentMs) > 1000)) {
+      events.push({
+        id: `updated:${c.id}:${c.revision}`,
+        type: 'card.updated',
+        timestamp: updatedAt,
+        actor,
+        cardId: c.id,
+        cardTitle: c.title,
+        cardStatus: c.status,
+        isTask: Boolean(c.is_task),
+        project: c.project ?? null,
+        assignee: c.assignee ?? null,
+        detail: null,
+      });
+    }
+  }
+
+  for (const cm of commentRows) {
+    if (Boolean(cm.archived)) continue;
+    events.push({
+      id: `comment:${cm.id}`,
+      type: 'comment.created',
+      timestamp: new Date(cm.created_at).toISOString(),
+      actor: cm.author,
+      cardId: cm.card_id,
+      cardTitle: cm.card_title,
+      cardStatus: cm.card_status,
+      isTask: false,
+      project: cm.project ?? null,
+      assignee: cm.assignee ?? null,
+      detail: cm.body.trim().slice(0, 220),
+    });
+  }
+
+  for (const im of imageRows) {
+    if (Boolean(im.archived)) continue;
+    events.push({
+      id: `image:${im.id}`,
+      type: 'image.added',
+      timestamp: new Date(im.created_at).toISOString(),
+      actor: im.card_author || 'Owner',
+      cardId: im.card_id,
+      cardTitle: im.card_title,
+      cardStatus: im.card_status,
+      isTask: false,
+      project: im.project ?? null,
+      assignee: im.assignee ?? null,
+      detail: im.caption || im.name || 'Image',
+    });
+  }
+
+  let filtered = events;
+  if (projectFilter) {
+    const p = projectFilter.toLowerCase();
+    filtered = filtered.filter(e => (e.project || '').toLowerCase() === p);
+  }
+  if (agentFilter) {
+    const a = agentFilter.toLowerCase();
+    filtered = filtered.filter(e => e.actor.toLowerCase() === a);
+  }
+  filtered.sort((a, b) => b.timestamp.localeCompare(a.timestamp) || b.id.localeCompare(a.id));
+  res.json({ events: filtered.slice(0, rawLimit) });
+});
+activityRouter.use(handleDbError);

@@ -1,4 +1,5 @@
 import { enablePush } from './push.js';
+import { createMarkdownEditor, safeHref } from './vendor/editor.js';
 
 const $ = (id) => document.getElementById(id);
 const dialog = $('dialog');
@@ -8,6 +9,7 @@ const views = {
   todos: { title: 'To-dos', icon: 'task', addLabel: 'Add To-do' },
   board: { title: 'Board', icon: 'board', addLabel: 'Add Card' },
   calendar: { title: 'Calendar', icon: 'calendar', addLabel: 'Add Card' },
+  activity: { title: 'Activity', icon: 'activity', addLabel: 'Add Notes' },
   archive: { title: 'Archive', icon: 'archive', addLabel: 'Add Notes' },
 };
 const state = {
@@ -15,6 +17,8 @@ const state = {
   epoch: 0,
   view: 'docs',
   cards: [],
+  activity: [],
+  activityWatermark: '',
   agents: new Map(),
   projects: [],
   project: 'all',
@@ -28,14 +32,91 @@ const state = {
     time: 'all',
     status: 'all',
     agent: 'all',
+    unread: false,
   },
 };
 const agentColors = ['slate', 'sky', 'green', 'amber', 'rose', 'teal'];
 const dateTimeFormat = new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+const timeOnlyFormat = new Intl.DateTimeFormat(undefined, { hour: 'numeric', minute: '2-digit' });
 let listVersion = 0,
   sheetVersion = 0,
   authVersion = 0;
 let searchTimer, toastTimer;
+let activeEditor = null;
+let activeSaveTimer = null;
+
+const READ_STORAGE_KEY = 'glamp:read:v1';
+function loadReadState() {
+  try {
+    const raw = localStorage.getItem(READ_STORAGE_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      return {
+        seenAt: parsed && typeof parsed.seenAt === 'object' && parsed.seenAt ? parsed.seenAt : {},
+        forceUnread: parsed && typeof parsed.forceUnread === 'object' && parsed.forceUnread ? parsed.forceUnread : {},
+        allReadBefore: typeof parsed?.allReadBefore === 'string' ? parsed.allReadBefore : '',
+        activitySeenAt: typeof parsed?.activitySeenAt === 'string' ? parsed.activitySeenAt : '',
+      };
+    }
+  } catch { /* ignore storage restrictions */ }
+  return { seenAt: {}, forceUnread: {}, allReadBefore: '', activitySeenAt: '' };
+}
+let readState = loadReadState();
+function saveReadState() {
+  try {
+    localStorage.setItem(READ_STORAGE_KEY, JSON.stringify(readState));
+  } catch { /* ignore storage quota or private-mode errors */ }
+}
+function isCardUnread(card) {
+  if (!card || card.archived) return false;
+  if (readState.forceUnread?.[card.id]) return true;
+  const seen = readState.seenAt?.[card.id] || '';
+  const floor = readState.allReadBefore || '';
+  const watermark = seen > floor ? seen : floor;
+  if (!watermark) return true;
+  return card.updatedAt > watermark;
+}
+function markCardRead(card) {
+  if (!card?.id) return;
+  if (readState.forceUnread) delete readState.forceUnread[card.id];
+  const stamp = card.updatedAt || new Date().toISOString();
+  const prev = readState.seenAt[card.id] || '';
+  if (stamp > prev) readState.seenAt[card.id] = stamp;
+  saveReadState();
+}
+function markCardUnread(card) {
+  if (!card?.id) return;
+  readState.forceUnread ??= {};
+  readState.forceUnread[card.id] = true;
+  saveReadState();
+}
+function markAllCardsRead() {
+  let latest = new Date().toISOString();
+  for (const c of state.cards) {
+    if (c.updatedAt && c.updatedAt > latest) latest = c.updatedAt;
+  }
+  readState.allReadBefore = latest;
+  readState.forceUnread = {};
+  saveReadState();
+}
+function syncUnreadControls() {
+  const unreadBtn = $('filter-unread');
+  const countEl = $('unread-count');
+  const markAllBtn = $('mark-all-read');
+  const hide = state.view === 'archive' || state.view === 'activity';
+  if (hide) {
+    unreadBtn.hidden = true;
+    markAllBtn.hidden = true;
+    return;
+  }
+  const scoped = applyFilters(state.cards, { ignoreUnread: true });
+  const unreadTotal = scoped.filter(isCardUnread).length;
+  unreadBtn.hidden = unreadTotal === 0 && !state.filters.unread;
+  unreadBtn.classList.toggle('active', state.filters.unread);
+  unreadBtn.setAttribute('aria-pressed', String(state.filters.unread));
+  countEl.textContent = unreadTotal > 0 ? String(unreadTotal) : '';
+  markAllBtn.hidden = unreadTotal === 0;
+}
 const sessionChannel = typeof BroadcastChannel !== 'undefined' ? new BroadcastChannel('glamp-session') : null;
 const stale = Symbol('obsolete request');
 const idPattern = /^[a-zA-Z0-9_-]{1,128}$/;
@@ -199,7 +280,7 @@ const json = (method, value) => ({
 });
 
 function resetFilters() {
-  state.filters = { type: 'all', time: 'all', status: 'all', agent: 'all' };
+  state.filters = { type: 'all', time: 'all', status: 'all', agent: 'all', unread: false };
   $('filter-type').value = 'all';
   $('filter-time').value = 'all';
   $('filter-status').value = 'all';
@@ -275,18 +356,22 @@ function syncAgentOptions() {
 function syncFilterChips() {
   const isTodos = state.view === 'todos';
   const isBoard = state.view === 'board';
-  $('chip-type-wrap').hidden = isTodos;
-  $('chip-status-wrap').hidden = isBoard;
-  $('chip-type-wrap').classList.toggle('active', !isTodos && state.filters.type !== 'all');
-  $('chip-time-wrap').classList.toggle('active', state.filters.time !== 'all');
-  $('chip-status-wrap').classList.toggle('active', !isBoard && state.filters.status !== 'all');
+  const isActivity = state.view === 'activity';
+  $('chip-type-wrap').hidden = isTodos || isActivity;
+  $('chip-time-wrap').hidden = isActivity;
+  $('chip-status-wrap').hidden = isBoard || isActivity;
+  $('chip-type-wrap').classList.toggle('active', !isTodos && !isActivity && state.filters.type !== 'all');
+  $('chip-time-wrap').classList.toggle('active', !isActivity && state.filters.time !== 'all');
+  $('chip-status-wrap').classList.toggle('active', !isBoard && !isActivity && state.filters.status !== 'all');
   $('chip-agent-wrap').classList.toggle('active', state.filters.agent !== 'all');
   const active =
-    (!isTodos && state.filters.type !== 'all') ||
-    state.filters.time !== 'all' ||
-    (!isBoard && state.filters.status !== 'all') ||
-    state.filters.agent !== 'all';
+    (!isTodos && !isActivity && state.filters.type !== 'all') ||
+    (!isActivity && state.filters.time !== 'all') ||
+    (!isBoard && !isActivity && state.filters.status !== 'all') ||
+    state.filters.agent !== 'all' ||
+    (!isActivity && state.view !== 'archive' && state.filters.unread);
   $('filter-clear').hidden = !active;
+  syncUnreadControls();
 }
 
 function lock(reason = '') {
@@ -296,9 +381,17 @@ function lock(reason = '') {
   ++sheetVersion;
   clearTimeout(searchTimer);
   clearTimeout(toastTimer);
+  clearTimeout(activeSaveTimer);
+  activeSaveTimer = null;
+  if (activeEditor) {
+    activeEditor.destroy();
+    activeEditor = null;
+  }
   state.owner = false;
   state.loaded = false;
   state.cards = [];
+  state.activity = [];
+  state.activityWatermark = '';
   state.agents = new Map();
   state.projects = [];
   state.project = 'all';
@@ -445,6 +538,37 @@ $('project-select').addEventListener('change', (e) => {
 });
 $('new-project').addEventListener('click', () => showNewProject());
 $('manage-agents').addEventListener('click', () => showAgentsManager());
+$('brand-home').addEventListener('click', () => {
+  if (!state.owner) {
+    location.reload();
+    return;
+  }
+  if (dialog.open) closeDialog();
+  state.view = 'docs';
+  if (!$('doc-view').hidden) closeDoc(true);
+  syncFilterChips();
+  refresh();
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+});
+$('refresh-app').addEventListener('click', async () => {
+  const btn = $('refresh-app');
+  if (btn.disabled) return;
+  btn.disabled = true;
+  btn.classList.add('is-spinning');
+  try {
+    clearTimeout(activeSaveTimer);
+    activeSaveTimer = null;
+    const flusher = activeFlushSave;
+    activeFlushSave = null;
+    if (flusher) await Promise.resolve(flusher()).catch(() => {});
+    if ('serviceWorker' in navigator) {
+      const reg = await navigator.serviceWorker.getRegistration().catch(() => null);
+      if (reg) await reg.update().catch(() => {});
+    }
+  } finally {
+    location.reload();
+  }
+});
 
 // Filter chips
 $('filter-type').addEventListener('change', (e) => {
@@ -467,12 +591,24 @@ $('filter-agent').addEventListener('change', (e) => {
   syncFilterChips();
   render();
 });
+$('filter-unread').addEventListener('click', () => {
+  state.filters.unread = !state.filters.unread;
+  syncFilterChips();
+  render();
+});
+$('mark-all-read').addEventListener('click', () => {
+  markAllCardsRead();
+  if (state.filters.unread) state.filters.unread = false;
+  syncFilterChips();
+  render();
+  notify('All cards marked as read.');
+});
 $('filter-clear').addEventListener('click', () => {
   resetFilters();
   render();
 });
 
-// A single server query feeds every view, including calendar and board.
+// A single server query feeds every view, including calendar, board, and activity.
 async function refresh() {
   const version = ++listVersion;
   const query = $('search').value.trim();
@@ -481,15 +617,30 @@ async function refresh() {
   render();
   try {
     const archivedParam = state.view === 'archive' ? '&archived=true' : '';
-    const [cardsRes, agentsRes, projectsRes] = await Promise.all([
-      request(`/api/cards?q=${encodeURIComponent(query)}${archivedParam}`),
+    const cardsPromise = request(`/api/cards?q=${encodeURIComponent(state.view === 'activity' ? '' : query)}${archivedParam}`);
+    const activityPromise = state.view === 'activity'
+      ? request('/api/activity?limit=80')
+      : Promise.resolve(null);
+    const [cardsRes, agentsRes, projectsRes, activityRes] = await Promise.all([
+      cardsPromise,
       request('/api/agents').catch(() => ({ agents: [] })),
       request('/api/projects').catch(() => ({ projects: [] })),
+      activityPromise,
     ]);
     if (version !== listVersion) return;
     state.cards = cardsRes.cards;
     state.agents = new Map((agentsRes?.agents || []).map((a) => [a.name.toLowerCase(), a]));
     state.projects = projectsRes?.projects || [];
+    if (activityRes) {
+      state.activity = activityRes.events || [];
+      if (state.activity.length) {
+        const newest = state.activity[0].timestamp;
+        if (!readState.activitySeenAt || newest > readState.activitySeenAt) {
+          readState.activitySeenAt = newest;
+          saveReadState();
+        }
+      }
+    }
     state.loaded = true;
     syncProjectOptions();
     syncAgentOptions();
@@ -497,12 +648,17 @@ async function refresh() {
   } catch (error) {
     if (error !== stale && version === listVersion && state.owner) {
       state.cards = [];
+      state.activity = [];
       state.loadError = message(error);
       render();
     }
   }
 }
 $('search').addEventListener('input', () => {
+  if (state.view === 'activity') {
+    render();
+    return;
+  }
   clearTimeout(searchTimer);
   ++listVersion;
   state.loaded = false;
@@ -513,11 +669,14 @@ $('search').addEventListener('input', () => {
 $('views').addEventListener('click', (e) => {
   const tab = e.target.closest('[data-view]');
   if (!tab) return;
-  const wasArchive = state.view === 'archive';
+  const prevView = state.view;
   state.view = tab.dataset.view;
+  if (state.view === 'activity' && prevView !== 'activity') {
+    state.activityWatermark = readState.activitySeenAt || '';
+  }
   if (!$('doc-view').hidden) closeDoc(true);
   syncFilterChips();
-  if (wasArchive) refresh();
+  if (prevView === 'archive' || state.view === 'activity') refresh();
   else render();
 });
 $('open-archive').addEventListener('click', () => {
@@ -544,16 +703,18 @@ function empty(title, description, glyph, action) {
 function hasActiveFilters() {
   const isTodos = state.view === 'todos';
   const isBoard = state.view === 'board';
+  const isActivity = state.view === 'activity';
   return (
     Boolean($('search').value.trim()) ||
-    (!isTodos && state.filters.type !== 'all') ||
-    state.filters.time !== 'all' ||
-    (!isBoard && state.filters.status !== 'all') ||
-    state.filters.agent !== 'all'
+    (!isTodos && !isActivity && state.filters.type !== 'all') ||
+    (!isActivity && state.filters.time !== 'all') ||
+    (!isBoard && !isActivity && state.filters.status !== 'all') ||
+    state.filters.agent !== 'all' ||
+    (!isActivity && state.view !== 'archive' && state.filters.unread)
   );
 }
 
-function applyFilters(cards) {
+function applyFilters(cards, { ignoreUnread = false } = {}) {
   const now = new Date();
   return cards.filter((card) => {
     if (state.project === '__unassigned__') {
@@ -573,6 +734,26 @@ function applyFilters(cards) {
       const members = card.contributors || (card.author ? [card.author] : []);
       const assignedMatch = (card.assignee || '').toLowerCase() === state.filters.agent;
       if (!assignedMatch && !members.some((name) => name.toLowerCase() === state.filters.agent)) return false;
+    }
+    if (!ignoreUnread && state.view !== 'archive' && state.filters.unread && !isCardUnread(card)) return false;
+    return true;
+  });
+}
+
+function filterActivity(events) {
+  const q = $('search').value.trim().toLowerCase();
+  return events.filter((ev) => {
+    if (state.project === '__unassigned__') {
+      if (ev.project) return false;
+    } else if (state.project !== 'all') {
+      if ((ev.project || '').toLowerCase() !== state.project.toLowerCase()) return false;
+    }
+    if (state.filters.agent !== 'all') {
+      if ((ev.actor || '').toLowerCase() !== state.filters.agent) return false;
+    }
+    if (q) {
+      const hay = `${ev.actor || ''} ${ev.cardTitle || ''} ${ev.detail || ''} ${ev.project || ''}`.toLowerCase();
+      if (!hay.includes(q)) return false;
     }
     return true;
   });
@@ -635,16 +816,25 @@ function render() {
   const results = $('results');
   results.replaceChildren();
   results.setAttribute('aria-busy', String(!state.loaded && !state.loadError));
-  const cards = applyFilters(state.cards);
-  $('card-count').textContent = state.loaded ? String(cards.length) : '';
+  syncUnreadControls();
   if (state.loadError) {
-    results.append(empty('Could not load cards', state.loadError, 'book', button('Try again', refresh)));
+    $('card-count').textContent = '';
+    results.append(empty('Could not load workspace', state.loadError, 'book', button('Try again', refresh)));
     return;
   }
   if (!state.loaded) {
-    results.append(node('p', 'quiet', 'Loading notes…'));
+    $('card-count').textContent = '';
+    results.append(node('p', 'quiet', state.view === 'activity' ? 'Loading activity…' : 'Loading notes…'));
     return;
   }
+  if (state.view === 'activity') {
+    const events = filterActivity(state.activity);
+    $('card-count').textContent = String(events.length);
+    results.append(activityView(events));
+    return;
+  }
+  const cards = applyFilters(state.cards);
+  $('card-count').textContent = String(cards.length);
   if (state.view === 'board') results.append(boardView(cards));
   else if (state.view === 'calendar') results.append(calendarView(cards));
   else if (state.view === 'todos') results.append(todoView(cards));
@@ -659,7 +849,6 @@ const fenceRe = /^\s*(```|~~~)/;
 function parseBodyPreview(card) {
   const raw = card.body || '';
   const lines = raw.replace(/\r\n?/g, '\n').split('\n');
-  const checks = [];
   const blocks = [];
   let rawBudget = 0;
   let inFence = false;
@@ -757,23 +946,11 @@ function parseBodyPreview(card) {
       continue;
     }
 
+    if (rawBudget >= 900) break;
+
     const unquoted = trimmed.replace(/^(?:>\s*)+/, '').trim();
     if (!unquoted) {
       flushPara();
-      continue;
-    }
-
-    const checkMatch = /^[-*+]\s+\[([ xX])\]\s+(.+)$/.exec(unquoted);
-    if (checkMatch) {
-      flushPara();
-      if (checks.length < 2) {
-        checks.push({ checked: checkMatch[1].toLowerCase() === 'x', text: checkMatch[2].trim() });
-      }
-      continue;
-    }
-
-    if (rawBudget >= 900) {
-      if (checks.length >= 2) break;
       continue;
     }
 
@@ -788,7 +965,7 @@ function parseBodyPreview(card) {
       continue;
     }
 
-    const listMatch = /^(?:[-*+]|\d+[.)])\s+(.+)$/.exec(unquoted);
+    const listMatch = /^(?:[-*+]|\d+[.)])\s+(?:\[[ xX]\]\s+)?(.+)$/.exec(unquoted);
     if (listMatch) {
       flushPara();
       const text = listMatch[1].trim();
@@ -804,7 +981,7 @@ function parseBodyPreview(card) {
   flushPara();
   flushCode();
 
-  return { blocks, checks };
+  return { blocks };
 }
 
 function trimPreviewNodes(el, maxChars = 240) {
@@ -839,7 +1016,7 @@ function trimPreviewNodes(el, maxChars = 240) {
   }
 }
 
-function renderBodyPreview(preview, target, fallback, { includeChecks = false, maxChars = 240 } = {}) {
+function renderBodyPreview(preview, target, fallback, { maxChars = 240 } = {}) {
   let hasContent = false;
   const appendSep = () => {
     if (hasContent) target.append(node('span', 'preview-sep', ' · '));
@@ -862,18 +1039,6 @@ function renderBodyPreview(preview, target, fallback, { includeChecks = false, m
     hasContent = true;
   }
 
-  if (!hasContent && includeChecks && preview.checks.length) {
-    for (const c of preview.checks) {
-      const frag = document.createDocumentFragment();
-      frag.append(c.checked ? '✓ ' : '☐ ');
-      appendInline(c.text, frag, { links: false });
-      if (!frag.textContent.trim()) continue;
-      appendSep();
-      target.append(frag);
-      hasContent = true;
-    }
-  }
-
   if (hasContent) trimPreviewNodes(target, maxChars);
   if (!target.textContent.trim() && fallback) target.textContent = fallback;
 }
@@ -883,7 +1048,8 @@ function toggleTaskCheckbox(card, check) {
     check.disabled = true;
     const next = check.checked ? 'done' : 'open';
     try {
-      await request(cardAPI(card.id), json('PATCH', { status: next }));
+      const { card: saved } = await request(cardAPI(card.id), json('PATCH', { status: next }));
+      markCardRead(saved);
       await refresh();
       $('results')
         .querySelector(`[data-todo="${CSS.escape(card.id)}"]`)
@@ -898,10 +1064,18 @@ function toggleTaskCheckbox(card, check) {
   });
 }
 
+function unreadDot() {
+  const dot = node('span', 'unread-dot');
+  dot.title = 'Unread updates';
+  dot.setAttribute('aria-label', 'Unread');
+  return dot;
+}
+
 function docsView(cards) {
   const feed = node('div', 'card-feed');
   for (const card of cards) {
-    const item = node('article', `card-item${card.isTask && card.status === 'done' ? ' done-task' : ''}`);
+    const unread = isCardUnread(card);
+    const item = node('article', `card-item${card.isTask && card.status === 'done' ? ' done-task' : ''}${unread ? ' is-unread' : ''}`);
     const top = node('div', 'card-top');
     const left = node('div', 'card-top-left');
 
@@ -916,6 +1090,7 @@ function docsView(cards) {
     if (tp) pills.append(tp);
     pills.append(badge(card.status));
 
+    if (unread) left.append(unreadDot());
     left.append(cardLink(card), pills);
 
     const arrow = icon('next');
@@ -924,23 +1099,9 @@ function docsView(cards) {
     item.append(top);
 
     const preview = parseBodyPreview(card);
-    if (preview.blocks.length || !preview.checks.length) {
-      const snipEl = node('p', 'card-snippet');
-      renderBodyPreview(preview, snipEl, card.isTask ? 'To-do item' : 'Note');
-      item.append(snipEl);
-    }
-
-    if (preview.checks.length) {
-      const checkWrap = node('div', 'card-check-preview');
-      for (const c of preview.checks) {
-        const row = node('div', `card-check-row${c.checked ? ' checked' : ''}`);
-        const label = node('span', 'card-check-text');
-        appendInline(c.text, label, { links: false });
-        row.append(node('span', `mini-box${c.checked ? ' checked' : ''}`), label);
-        checkWrap.append(row);
-      }
-      item.append(checkWrap);
-    }
+    const snipEl = node('p', 'card-snippet');
+    renderBodyPreview(preview, snipEl, card.isTask ? 'To-do item' : 'Note');
+    item.append(snipEl);
 
     const footer = node('div', 'card-footer');
     if (card.isTask) {
@@ -993,7 +1154,8 @@ function boardView(cards) {
     lane.append(head);
     if (!group.length) lane.append(node('p', 'lane-empty', 'No cards here yet.'));
     for (const card of group) {
-      const item = node('article', 'lane-card');
+      const unread = isCardUnread(card);
+      const item = node('article', `lane-card${unread ? ' is-unread' : ''}`);
       const top = node('div', 'lane-card-top');
       top.append(node('span', `pill ${card.isTask ? 'kind-task' : 'kind-note'}`, card.isTask ? 'Task' : 'Note'));
       if (card.assignee) top.append(node('span', 'pill assignee-tag', `@${card.assignee}`));
@@ -1001,15 +1163,101 @@ function boardView(cards) {
       if (tp) top.append(tp);
       else if (!card.assignee) top.append(node('span', 'card-date', displayDate(new Date(card.createdAt))));
 
+      const titleRow = node('div', 'lane-card-title-row');
+      if (unread) titleRow.append(unreadDot());
+      titleRow.append(cardLink(card));
+
       const preview = parseBodyPreview(card);
       const snipEl = node('p', 'snippet');
-      renderBodyPreview(preview, snipEl, 'No notes yet.', { includeChecks: true, maxChars: 160 });
-      item.append(top, cardLink(card), snipEl);
+      renderBodyPreview(preview, snipEl, 'No notes yet.', { maxChars: 160 });
+      item.append(top, titleRow, snipEl);
       lane.append(item);
     }
     lanes.append(lane);
   }
   return lanes;
+}
+
+function activityView(events) {
+  if (!events.length) {
+    return hasActiveFilters()
+      ? empty(
+          'No matching activity',
+          'Try clearing your search or agent filter.',
+          'activity',
+          button('Clear filters', () => {
+            $('search').value = '';
+            resetFilters();
+            render();
+          }),
+        )
+      : empty(
+          'No activity yet',
+          'New notes, edits, comments, and images from you and your agents will appear here.',
+          'activity',
+          button('Add Notes', () => showEditor(null), 'btn primary', 'plus'),
+        );
+  }
+  const wrap = node('div', 'activity-feed');
+  const now = new Date();
+  const today = dayKey(now);
+  const yesterday = offsetDay(now, -1);
+  const groups = new Map();
+  for (const ev of events) {
+    const dt = new Date(ev.timestamp);
+    const key = Number.isFinite(dt.valueOf()) ? dayKey(dt) : 'unknown';
+    let arr = groups.get(key);
+    if (!arr) {
+      arr = [];
+      groups.set(key, arr);
+    }
+    arr.push(ev);
+  }
+  const verbs = {
+    'card.created': 'created',
+    'card.updated': 'updated',
+    'comment.created': 'commented on',
+    'image.added': 'attached an image to',
+  };
+  for (const [key, list] of groups.entries()) {
+    const sec = node('section', 'activity-day');
+    const headingLabel =
+      key === today ? 'Today' : key === yesterday ? 'Yesterday' : key === 'unknown' ? 'Earlier' : displayDate(localDate(key));
+    sec.append(node('h3', 'activity-day-head', headingLabel));
+    const ul = node('div', 'activity-list');
+    for (const ev of list) {
+      const isNew = Boolean(state.activityWatermark && ev.timestamp > state.activityWatermark);
+      const row = node('article', `activity-row${isNew ? ' is-new' : ''}`);
+      const main = node('div', 'activity-main');
+      const line = node('div', 'activity-line');
+      line.append(
+        node('strong', 'activity-actor', ev.actor || 'Owner'),
+        ' ',
+        node('span', 'activity-verb', verbs[ev.type] || 'updated'),
+        ' ',
+        cardLink({ id: ev.cardId, title: ev.cardTitle }, 'activity-card-link', ev.cardTitle),
+      );
+      const pills = node('span', 'activity-pills');
+      if (ev.project && state.project === 'all') pills.append(node('span', 'pill project-tag', ev.project));
+      pills.append(badge(ev.cardStatus));
+      line.append(' ', pills);
+      main.append(line);
+      if (ev.detail) {
+        const snip = node('p', 'activity-detail');
+        appendInline(ev.detail, snip, { links: false });
+        main.append(snip);
+      }
+      const stamp = new Date(ev.timestamp);
+      const meta = node('div', 'activity-time');
+      if (isNew) meta.append(unreadDot());
+      meta.append(node('span', '', Number.isFinite(stamp.valueOf()) ? timeOnlyFormat.format(stamp) : ''));
+      row.append(avatarBadge(ev.actor || 'Owner', true), main, meta);
+      ul.append(row);
+    }
+    sec.append(ul);
+    wrap.append(sec);
+  }
+  return wrap;
 }
 
 function weekDaysStartingMonday(now = new Date()) {
@@ -1114,7 +1362,8 @@ function todoView(cards) {
 
   const list = node('div', 'todo-list');
   for (const card of visible) {
-    const row = node('article', `todo-row${card.status === 'done' ? ' done-task' : ''}`);
+    const unread = isCardUnread(card);
+    const row = node('article', `todo-row${card.status === 'done' ? ' done-task' : ''}${unread ? ' is-unread' : ''}`);
     const check = node('input');
     check.type = 'checkbox';
     check.checked = card.status === 'done';
@@ -1133,9 +1382,12 @@ function todoView(cards) {
     } else {
       const sched = scheduleText(card);
       if (sched) subEl.textContent = sched;
-      else renderBodyPreview(parseBodyPreview(card), subEl, 'To-do item', { includeChecks: true, maxChars: 140 });
+      else renderBodyPreview(parseBodyPreview(card), subEl, 'To-do item', { maxChars: 140 });
     }
-    body.append(cardLink(card), subEl);
+    const titleRow = node('div', 'todo-title-row');
+    if (unread) titleRow.append(unreadDot());
+    titleRow.append(cardLink(card));
+    body.append(titleRow, subEl);
 
     const badges = node('div', 'todo-row-badges');
     if (card.assignee) badges.append(node('span', 'pill assignee-tag', `@${card.assignee}`));
@@ -1272,6 +1524,29 @@ function replaceCardURL(id, push = false) {
   else url.searchParams.delete('card');
   if (url.href !== location.href) history[push ? 'pushState' : 'replaceState'](null, '', url);
 }
+let activeFlushSave = null;
+function teardownDocEditor(flush = false) {
+  clearTimeout(activeSaveTimer);
+  activeSaveTimer = null;
+  const flusher = activeFlushSave;
+  activeFlushSave = null;
+  if (flush && flusher) flusher();
+  if (activeEditor) {
+    activeEditor.destroy();
+    activeEditor = null;
+  }
+  const saveEl = $('doc-save-state');
+  if (saveEl) {
+    saveEl.textContent = '';
+    saveEl.className = 'doc-save-state';
+  }
+}
+function setDocSaveState(text, tone = '') {
+  const el = $('doc-save-state');
+  if (!el) return;
+  el.textContent = text;
+  el.className = `doc-save-state${tone ? ` is-${tone}` : ''}`;
+}
 function closeDialog() {
   ++sheetVersion;
   if (dialog.open) dialog.close();
@@ -1279,11 +1554,16 @@ function closeDialog() {
   $('dialog-message').textContent = '';
 }
 function closeDoc(updateURL = true) {
+  teardownDocEditor(true);
   ++sheetVersion;
   $('doc-view').hidden = true;
   $('doc-detail').replaceChildren();
   $('doc-message').textContent = '';
-  if (state.owner) $('workspace').hidden = false;
+  if (state.owner) {
+    $('workspace').hidden = false;
+    syncFilterChips();
+    render();
+  }
   if (updateURL) replaceCardURL(null);
   if (state.owner && document.activeElement === document.body) $('add').focus();
 }
@@ -1323,17 +1603,23 @@ function sheet(title) {
   heading.focus();
   return heading;
 }
-function docSheet(title) {
+function docSheet(title, { customHeader = false } = {}) {
+  teardownDocEditor(true);
   if (dialog.open) closeDialog();
-  const heading = node('h1', '', title);
-  heading.id = 'doc-title';
-  heading.tabIndex = -1;
   $('doc-back-label').textContent = `Back to ${views[state.view]?.title || 'Notes'}`;
-  $('doc-detail').replaceChildren(heading);
   $('doc-message').textContent = '';
+  setDocSaveState('');
   $('workspace').hidden = true;
   $('doc-view').hidden = false;
   window.scrollTo({ top: 0, behavior: 'instant' });
+  if (customHeader) {
+    $('doc-detail').replaceChildren();
+    return null;
+  }
+  const heading = node('h1', '', title);
+  heading.id = 'doc-title';
+  heading.tabIndex = -1;
+  $('doc-detail').replaceChildren(heading);
   heading.focus();
   return heading;
 }
@@ -1598,22 +1884,12 @@ function renderBody(text) {
       container.append(quote);
       continue;
     }
-    // Checklist or unordered list
+    // Unordered list (simple Markdown — no inline checkboxes)
     if (/^\s*[-*+]\s+/.test(line)) {
-      const isChecklist = /^\s*[-*+]\s+\[([ xX])\]\s+/.test(line);
-      const ul = node('ul', isChecklist ? 'md-checklist' : '');
+      const ul = node('ul');
       while (i < lines.length && /^\s*[-*+]\s+/.test(lines[i])) {
-        const checkMatch = /^\s*[-*+]\s+\[([ xX])\]\s+(.*)$/.exec(lines[i]);
         const li = node('li');
-        if (isChecklist && checkMatch) {
-          const checked = checkMatch[1].toLowerCase() === 'x';
-          if (checked) li.className = 'checked';
-          const textSpan = node('span');
-          appendInline(checkMatch[2], textSpan);
-          li.append(node('span', `mini-box${checked ? ' checked' : ''}`), textSpan);
-        } else {
-          appendInline(lines[i].replace(/^\s*[-*+]\s+/, ''), li);
-        }
+        appendInline(lines[i].replace(/^\s*[-*+]\s+(?:\[[ xX]\]\s+)?/, ''), li);
         ul.append(li);
         i++;
       }
@@ -1645,42 +1921,605 @@ function renderBody(text) {
   }
   return container;
 }
-function showCard(card) {
+function buildRichEditorWidget({
+  initialMarkdown = '',
+  placeholder = 'Write simple Markdown notes… (## heading, **bold**, - list, > quote)',
+  currentCardId = null,
+  onChange,
+  onSaveShortcut,
+}) {
+  const wrap = node('div', 'rich-editor-wrap');
+  const toolbar = node('div', 'editor-toolbar');
+  toolbar.setAttribute('role', 'toolbar');
+  toolbar.setAttribute('aria-label', 'Formatting');
+  const linkBar = node('div', 'editor-link-bar');
+  linkBar.hidden = true;
+  const host = node('div', 'editor-host');
+
+  const toolButtons = new Map();
+  let mode = ''; // '' | 'url' | 'card'
+  let editor = null;
+
+  const tools = [
+    ['h2', 'H2', 'Heading 2'],
+    ['h3', 'H3', 'Heading 3'],
+    ['bold', 'B', 'Bold (Cmd+B)'],
+    ['italic', 'I', 'Italic (Cmd+I)'],
+    ['strike', 'S', 'Strikethrough'],
+    ['code', '</>', 'Inline code'],
+    ['blockquote', '“', 'Quote'],
+    ['bulletList', '• List', 'Bullet list'],
+    ['orderedList', '1. List', 'Numbered list'],
+  ];
+
+  for (const [cmd, label, title] of tools) {
+    const b = node('button', `tool-btn tool-${cmd}`, label);
+    b.type = 'button';
+    b.title = title;
+    b.setAttribute('aria-label', title);
+    b.setAttribute('aria-pressed', 'false');
+    b.addEventListener('mousedown', (e) => e.preventDefault());
+    b.addEventListener('click', () => {
+      editor?.exec(cmd);
+      syncToolbar();
+    });
+    toolButtons.set(cmd, b);
+    toolbar.append(b);
+  }
+
+  const sep = node('span', 'tool-sep');
+  sep.setAttribute('aria-hidden', 'true');
+  toolbar.append(sep);
+
+  const linkBtn = node('button', 'tool-btn', 'Link');
+  linkBtn.type = 'button';
+  linkBtn.title = 'Insert or edit link';
+  linkBtn.addEventListener('mousedown', (e) => e.preventDefault());
+  linkBtn.addEventListener('click', () => {
+    mode = mode === 'url' ? '' : 'url';
+    renderLinkBar();
+  });
+  toolButtons.set('link', linkBtn);
+
+  const cardLinkBtn = node('button', 'tool-btn', 'Link card');
+  cardLinkBtn.type = 'button';
+  cardLinkBtn.title = 'Link to another card';
+  cardLinkBtn.addEventListener('mousedown', (e) => e.preventDefault());
+  cardLinkBtn.addEventListener('click', () => {
+    mode = mode === 'card' ? '' : 'card';
+    renderLinkBar();
+  });
+  toolbar.append(linkBtn, cardLinkBtn);
+
+  const openEditorHref = (href, cardId) => {
+    if (cardId) {
+      replaceCardURL(cardId, true);
+      openCard(cardId);
+      return;
+    }
+    const ext = safeExternalURL(href);
+    if (ext) window.open(ext, '_blank', 'noopener,noreferrer');
+  };
+
+  const renderLinkBar = () => {
+    linkBar.replaceChildren();
+    if (!editor) {
+      linkBar.hidden = true;
+      return;
+    }
+    const active = editor.activeState();
+    if (mode === 'url') {
+      linkBar.hidden = false;
+      const form = node('form', 'editor-link-form');
+      const inp = node('input');
+      inp.type = 'text';
+      inp.placeholder = 'https://example.com or /?card=…';
+      inp.value = active.linkHref || '';
+      inp.setAttribute('aria-label', 'Link URL');
+      const applyBtn = node('button', 'btn sm primary', 'Apply');
+      applyBtn.type = 'submit';
+      form.append(inp, applyBtn);
+      if (active.link) {
+        form.append(
+          button('Unlink', () => {
+            editor.exec('unsetLink');
+            mode = '';
+            renderLinkBar();
+            syncToolbar();
+          }, 'btn sm'),
+        );
+      }
+      form.append(
+        button('Cancel', () => {
+          mode = '';
+          renderLinkBar();
+          editor.focus();
+        }, 'btn sm ghost'),
+      );
+      form.addEventListener('submit', (e) => {
+        e.preventDefault();
+        const raw = inp.value.trim();
+        if (!raw) {
+          editor.exec('unsetLink');
+          mode = '';
+          renderLinkBar();
+          return;
+        }
+        const normalized = safeHref(raw, location.origin) || safeHref(`https://${raw}`, location.origin);
+        if (!normalized) {
+          sheetMessage('Enter a valid https://, http://, or /?card= link.');
+          return;
+        }
+        editor.exec('setLink', { href: normalized });
+        mode = '';
+        renderLinkBar();
+        syncToolbar();
+      });
+      linkBar.append(form);
+      inp.focus();
+      inp.select();
+      return;
+    }
+    if (mode === 'card') {
+      linkBar.hidden = false;
+      const picker = node('div', 'card-link-picker');
+      const topRow = node('div', 'editor-link-form');
+      const searchInp = node('input');
+      searchInp.type = 'search';
+      searchInp.placeholder = 'Search cards to link…';
+      searchInp.setAttribute('aria-label', 'Search cards to link');
+      topRow.append(
+        searchInp,
+        button('Close', () => {
+          mode = '';
+          renderLinkBar();
+          editor.focus();
+        }, 'btn sm ghost'),
+      );
+      const list = node('div', 'card-link-results');
+      const renderChoices = () => {
+        list.replaceChildren();
+        const q = searchInp.value.trim().toLowerCase();
+        const matches = state.cards
+          .filter((c) => c.id !== currentCardId && !c.archived)
+          .filter((c) => !q || c.title.toLowerCase().includes(q) || (c.project || '').toLowerCase().includes(q))
+          .slice(0, 8);
+        if (!matches.length) {
+          list.append(node('p', 'help', 'No matching cards to link.'));
+          return;
+        }
+        for (const c of matches) {
+          const opt = button('', () => {
+            editor.exec('insertCardLink', { id: c.id, title: c.title });
+            mode = '';
+            renderLinkBar();
+            syncToolbar();
+          }, 'card-link-choice');
+          opt.append(node('span', 'card-link-choice-title', c.title));
+          if (c.project) opt.append(node('span', 'pill project-tag', c.project));
+          opt.append(badge(c.status));
+          list.append(opt);
+        }
+      };
+      searchInp.addEventListener('input', renderChoices);
+      renderChoices();
+      picker.append(topRow, list);
+      linkBar.append(picker);
+      searchInp.focus();
+      return;
+    }
+    if (active.link && active.linkHref) {
+      linkBar.hidden = false;
+      const info = node('div', 'editor-link-preview');
+      const targetCard = active.linkCardId ? state.cards.find((c) => c.id === active.linkCardId) : null;
+      const destLabel = targetCard ? `Card: ${targetCard.title}` : active.linkHref;
+      info.append(
+        node('span', 'editor-link-dest', destLabel),
+        button(active.linkCardId ? 'Open card' : 'Open link', () => openEditorHref(active.linkHref, active.linkCardId), 'btn sm'),
+        button('Edit', () => {
+          mode = 'url';
+          renderLinkBar();
+        }, 'btn sm ghost'),
+        button('Unlink', () => {
+          editor.exec('unsetLink');
+          renderLinkBar();
+          syncToolbar();
+        }, 'btn sm ghost'),
+      );
+      linkBar.append(info);
+      return;
+    }
+    linkBar.hidden = true;
+  };
+
+  const syncToolbar = () => {
+    if (!editor) return;
+    const active = editor.activeState();
+    for (const [key, btn] of toolButtons.entries()) {
+      const on = Boolean(active[key]);
+      btn.classList.toggle('is-active', on);
+      btn.setAttribute('aria-pressed', String(on));
+    }
+    if (!mode) renderLinkBar();
+  };
+
+  host.addEventListener('click', (e) => {
+    const a = e.target.closest('a[href]');
+    if (!a) return;
+    if (e.metaKey || e.ctrlKey) {
+      e.preventDefault();
+      openEditorHref(a.getAttribute('href') || '', a.dataset.cardLink || '');
+    }
+  });
+
+  editor = createMarkdownEditor({
+    element: host,
+    content: initialMarkdown || '',
+    placeholder,
+    onUpdate: () => {
+      syncToolbar();
+      onChange?.();
+    },
+    onSelectionUpdate: () => syncToolbar(),
+    onFocus: () => wrap.classList.add('is-focused'),
+    onBlur: () => wrap.classList.remove('is-focused'),
+    onSaveShortcut,
+  });
+  activeEditor = editor;
+  syncToolbar();
+
+  wrap.append(toolbar, linkBar, host);
+  return { wrap, editor };
+}
+
+function backlinksSection(card, version) {
+  const section = node('section', 'backlinks-section');
+  section.hidden = true;
+  const head = node('div', 'backlinks-head');
+  const titleWrap = node('div', 'backlinks-title');
+  titleWrap.append(icon('backlink'), node('h3', '', 'Linked from'));
+  const count = node('span', 'count', '');
+  head.append(titleWrap, count);
+  const list = node('div', 'backlinks-list');
+  section.append(head, list);
+
+  const load = async () => {
+    try {
+      const { backlinks } = await request(`${cardAPI(card.id)}/backlinks`);
+      if (version !== sheetVersion) return;
+      list.replaceChildren();
+      if (!backlinks?.length) {
+        section.hidden = true;
+        return;
+      }
+      section.hidden = false;
+      count.textContent = String(backlinks.length);
+      for (const b of backlinks) {
+        const item = node('article', 'backlink-item');
+        const top = node('div', 'backlink-top');
+        const pills = node('span', 'card-pills');
+        if (b.project && b.project !== card.project) pills.append(node('span', 'pill project-tag', b.project));
+        if (b.source === 'comment') pills.append(node('span', 'pill kind-note', 'Comment'));
+        pills.append(badge(b.status));
+        top.append(cardLink(b, 'backlink-link', b.title), pills);
+        item.append(top);
+        if (b.snippet) item.append(node('p', 'backlink-snippet', b.snippet));
+        list.append(item);
+      }
+    } catch {
+      // Keep hidden if backlinks cannot be loaded.
+    }
+  };
+  load();
+  return section;
+}
+
+function buildDatalists() {
+  const projList = node('datalist');
+  projList.id = 'project-suggestions';
+  const projNames = new Set(state.projects.map((p) => p.name));
+  for (const c of state.cards) if (c.project) projNames.add(c.project);
+  for (const name of [...projNames].sort((a, b) => a.localeCompare(b))) {
+    const opt = node('option');
+    opt.value = name;
+    projList.append(opt);
+  }
+  const agentList = node('datalist');
+  agentList.id = 'agent-suggestions';
+  const agentNames = new Set(['Owner', ...[...state.agents.values()].map((a) => a.name)]);
+  for (const name of [...agentNames].sort((a, b) => a.localeCompare(b))) {
+    const opt = node('option');
+    opt.value = name;
+    agentList.append(opt);
+  }
+  return [projList, agentList];
+}
+
+function syncCardInState(saved) {
+  const idx = state.cards.findIndex((c) => c.id === saved.id);
+  if (idx >= 0) state.cards[idx] = saved;
+}
+
+function showCard(initialCard) {
   const version = ++sheetVersion;
-  const heading = docSheet(card.title),
-    detail = $('doc-detail');
-  const top = node('div', 'detail-top');
-  if (card.archived) top.append(node('span', 'pill archived-tag', 'Archived'));
-  if (card.project) top.append(node('span', 'pill project-tag', card.project));
-  if (card.assignee) top.append(node('span', 'pill assignee-tag', `@${card.assignee}`));
-  top.append(
-    badge(card.status),
-    node('span', `pill ${card.isTask ? 'kind-task' : 'kind-note'}`, card.isTask ? 'Task' : 'Note'),
-  );
-  const tp = timePill(card);
-  if (tp) top.append(tp);
-  heading.before(top);
+  let card = { ...initialCard };
+  markCardRead(card);
+  syncCardInState(card);
+
+  docSheet(card.title, { customHeader: true });
+  const detail = $('doc-detail');
+
+  const topPills = node('div', 'detail-top');
+  const renderTopPills = () => {
+    topPills.replaceChildren();
+    if (card.archived) topPills.append(node('span', 'pill archived-tag', 'Archived'));
+    if (card.project) topPills.append(node('span', 'pill project-tag', card.project));
+    if (card.assignee) topPills.append(node('span', 'pill assignee-tag', `@${card.assignee}`));
+    topPills.append(
+      badge(card.status),
+      node('span', `pill ${card.isTask ? 'kind-task' : 'kind-note'}`, card.isTask ? 'Task' : 'Note'),
+    );
+    const tp = timePill(card);
+    if (tp) topPills.append(tp);
+  };
+  renderTopPills();
+
+  const titleInput = node('textarea', 'doc-title-input');
+  titleInput.id = 'doc-title';
+  titleInput.rows = 1;
+  titleInput.maxLength = 200;
+  titleInput.value = card.title;
+  titleInput.placeholder = 'Untitled note';
+  titleInput.setAttribute('aria-label', 'Card title');
+
   const meta = node('div', 'detail-meta');
-  if (card.author) {
-    const a = node('span');
-    a.append(avatarBadge(card.author), card.author);
-    meta.append(a);
-  }
-  meta.append(node('span', '', `Created ${displayDate(new Date(card.createdAt))}`));
-  if (card.startingDate || card.endingDate) {
-    const s = node('span');
-    s.append(icon('calendar'), scheduleText(card));
-    meta.append(s);
-  }
+  const renderMeta = () => {
+    meta.replaceChildren();
+    if (card.author) {
+      const a = node('span');
+      a.append(avatarBadge(card.author), card.author);
+      meta.append(a);
+    }
+    meta.append(node('span', '', `Created ${displayDate(new Date(card.createdAt))}`));
+    if (card.startingDate || card.endingDate) {
+      const s = node('span');
+      s.append(icon('calendar'), scheduleText(card));
+      meta.append(s);
+    }
+  };
+  renderMeta();
+
   const actions = node('div', 'button-row doc-actions');
+  const propsPanel = node('form', 'doc-props-panel');
+  propsPanel.hidden = true;
+
+  const images = topImageSection(card, version);
+  const backlinks = backlinksSection(card, version);
+  const comments = commentSection(card, version);
+
+  // Properties panel fields
+  const propStatus = editorInput('select', 'prop-status');
+  for (const [val, label] of Object.entries(statuses)) {
+    const opt = node('option', '', label);
+    opt.value = val;
+    propStatus.append(opt);
+  }
+  propStatus.value = card.status;
+  const propTypeWrap = node('label', 'check-label');
+  const propTask = editorInput('input', 'prop-isTask');
+  propTask.type = 'checkbox';
+  propTask.checked = Boolean(card.isTask);
+  propTypeWrap.append(propTask, 'This is a to-do');
+  const propStart = editorInput('input', 'prop-start', card.startingDate);
+  propStart.type = 'date';
+  const propEnd = editorInput('input', 'prop-end', card.endingDate);
+  propEnd.type = 'date';
+  const syncLimits = () => {
+    propEnd.min = propStart.value;
+    propStart.max = propEnd.value;
+  };
+  syncLimits();
+  propStart.addEventListener('input', syncLimits);
+  propEnd.addEventListener('input', syncLimits);
+
+  const propProject = editorInput('input', 'prop-project', card.project);
+  propProject.maxLength = 60;
+  propProject.placeholder = 'Optional project';
+  propProject.setAttribute('list', 'project-suggestions');
+
+  const propAssignee = editorInput('input', 'prop-assignee', card.assignee);
+  propAssignee.maxLength = 60;
+  propAssignee.placeholder = 'Optional (e.g. growth, Owner)';
+  propAssignee.setAttribute('list', 'agent-suggestions');
+
+  const propAuthor = editorInput('input', 'prop-author', card.author);
+  propAuthor.maxLength = 60;
+  propAuthor.placeholder = 'Optional author';
+
+  const row1 = node('div', 'two-col');
+  row1.append(field('Status', propStatus), propTypeWrap);
+  const row2 = node('div', 'two-col');
+  row2.append(field('Project', propProject), field('Assigned to', propAssignee));
+  const row3 = node('div', 'two-col');
+  row3.append(field('Start date', propStart), field('End date', propEnd));
+  const propActions = node('div', 'doc-props-actions');
+  const savePropsBtn = node('button', 'btn sm primary', 'Save details');
+  savePropsBtn.type = 'submit';
+  propActions.append(button('Close', () => { propsPanel.hidden = true; }, 'btn sm ghost'), savePropsBtn);
+  propsPanel.append(row1, row2, row3, field('Author', propAuthor), propActions, ...buildDatalists());
+
+  let lastSavedTitle = card.title;
+  let lastSavedBody = card.body || '';
+  let inFlightSave = null;
+  let queuedSave = false;
+
+  const getDraft = () => ({
+    title: titleInput.value.trim(),
+    body: rich.editor.getMarkdown(),
+  });
+
+  const isDirty = () => {
+    const d = getDraft();
+    return (d.title && d.title !== lastSavedTitle) || d.body !== lastSavedBody;
+  };
+
+  const patchCardFields = async (patch, { quiet = false } = {}) => {
+    const { card: saved } = await request(cardAPI(card.id), json('PATCH', patch));
+    card = saved;
+    markCardRead(saved);
+    syncCardInState(saved);
+    if (version === sheetVersion) {
+      if (Object.hasOwn(patch, 'title')) lastSavedTitle = saved.title;
+      if (Object.hasOwn(patch, 'body')) lastSavedBody = saved.body || '';
+      propStatus.value = saved.status;
+      propTask.checked = Boolean(saved.isTask);
+      propStart.value = saved.startingDate || '';
+      propEnd.value = saved.endingDate || '';
+      propProject.value = saved.project || '';
+      propAssignee.value = saved.assignee || '';
+      propAuthor.value = saved.author || '';
+      syncLimits();
+      renderTopPills();
+      renderMeta();
+      renderActions();
+      if (!quiet) sheetMessage('Saved.');
+    }
+    return saved;
+  };
+
+  const saveDraftNow = async ({ silent = false } = {}) => {
+    clearTimeout(activeSaveTimer);
+    activeSaveTimer = null;
+    if (inFlightSave) {
+      queuedSave = true;
+      return inFlightSave;
+    }
+    const draft = getDraft();
+    const edit = {};
+    if (!draft.title) {
+      if (!silent) {
+        setDocSaveState('Title required', 'error');
+        sheetMessage('Enter a title before saving.');
+      }
+      return;
+    }
+    if (draft.title !== lastSavedTitle) edit.title = draft.title;
+    if (draft.body !== lastSavedBody) edit.body = draft.body;
+    if (!Object.keys(edit).length) {
+      setDocSaveState('Saved', 'saved');
+      return;
+    }
+    if (edit.body && [...edit.body].length > 20000) {
+      setDocSaveState('Too long', 'error');
+      sheetMessage('Body exceeds the 20,000 character limit.');
+      return;
+    }
+    setDocSaveState('Saving…', 'saving');
+    inFlightSave = (async () => {
+      try {
+        await patchCardFields(edit, { quiet: true });
+        if (version === sheetVersion) {
+          setDocSaveState('Saved', 'saved');
+          sheetMessage('');
+        }
+      } catch (error) {
+        if (error !== stale && version === sheetVersion) {
+          setDocSaveState('Save failed', 'error');
+          sheetMessage(message(error));
+        }
+      } finally {
+        inFlightSave = null;
+        if (queuedSave && version === sheetVersion) {
+          queuedSave = false;
+          saveDraftNow({ silent: true });
+        }
+      }
+    })();
+    return inFlightSave;
+  };
+
+  const scheduleAutosave = () => {
+    if (!isDirty()) return;
+    setDocSaveState('Unsaved', 'dirty');
+    clearTimeout(activeSaveTimer);
+    activeSaveTimer = setTimeout(() => {
+      if (version === sheetVersion) saveDraftNow({ silent: true });
+    }, 1100);
+  };
+
+  const rich = buildRichEditorWidget({
+    initialMarkdown: card.body || '',
+    currentCardId: card.id,
+    onChange: scheduleAutosave,
+    onSaveShortcut: () => saveDraftNow(),
+  });
+  // Normalize initial saved body to match Tiptap's Markdown serialization so mere focus doesn't trigger a spurious save.
+  lastSavedBody = rich.editor.getMarkdown();
+
+  activeFlushSave = () => {
+    if (!isDirty()) return Promise.resolve();
+    const draft = getDraft();
+    const edit = {};
+    if (draft.title && draft.title !== lastSavedTitle) edit.title = draft.title;
+    if (draft.body !== lastSavedBody && [...draft.body].length <= 20000) edit.body = draft.body;
+    if (!Object.keys(edit).length) return Promise.resolve();
+    return request(cardAPI(card.id), json('PATCH', edit))
+      .then(({ card: saved }) => {
+        markCardRead(saved);
+        syncCardInState(saved);
+        refresh();
+      })
+      .catch(() => { /* ignore background flush error */ });
+  };
+
+  titleInput.addEventListener('input', scheduleAutosave);
+  titleInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      rich.editor.focus();
+    } else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 's') {
+      e.preventDefault();
+      saveDraftNow();
+    }
+  });
+
+  propsPanel.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    if (savePropsBtn.disabled) return;
+    const nextValues = {
+      status: propStatus.value,
+      isTask: propTask.checked,
+      startingDate: propStart.value || null,
+      endingDate: propEnd.value || null,
+      project: propProject.value.trim() || null,
+      assignee: propAssignee.value.trim().replace(/^@+/, '') || null,
+      author: propAuthor.value.trim() || null,
+    };
+    const edit = Object.fromEntries(Object.entries(nextValues).filter(([k, v]) => (card[k] ?? null) !== v));
+    if (!Object.keys(edit).length) {
+      propsPanel.hidden = true;
+      return;
+    }
+    savePropsBtn.disabled = true;
+    try {
+      await patchCardFields(edit, { quiet: true });
+      if (version === sheetVersion) {
+        propsPanel.hidden = true;
+        sheetMessage('Details updated.');
+      }
+      refresh();
+    } catch (error) {
+      if (error !== stale && version === sheetVersion) sheetMessage(message(error));
+    } finally {
+      if (version === sheetVersion) savePropsBtn.disabled = false;
+    }
+  });
+
   const statusAction = async (next) => {
     for (const b of actions.querySelectorAll('button')) b.disabled = true;
     try {
-      const { card: saved } = await request(cardAPI(card.id), json('PATCH', { status: next }));
-      if (version === sheetVersion) {
-        showCard(saved);
-        sheetMessage(`Card marked ${statuses[next].toLowerCase()}.`);
-      }
+      await patchCardFields({ status: next }, { quiet: true });
+      if (version === sheetVersion) sheetMessage(`Card marked ${statuses[next].toLowerCase()}.`);
       refresh();
     } catch (error) {
       if (error !== stale && version === sheetVersion) {
@@ -1689,16 +2528,16 @@ function showCard(card) {
       }
     }
   };
+
   const archiveAction = async (archived) => {
     for (const b of actions.querySelectorAll('button')) b.disabled = true;
     try {
-      const { card: saved } = await request(cardAPI(card.id), json('PATCH', { archived }));
+      await patchCardFields({ archived }, { quiet: true });
       if (version === sheetVersion) {
         if (archived) {
           closeDoc(true);
           notify('Card archived.');
         } else {
-          showCard(saved);
           sheetMessage('Card restored from archive.');
         }
       }
@@ -1710,48 +2549,66 @@ function showCard(card) {
       }
     }
   };
-  const images = topImageSection(card, version);
-  actions.append(button('Edit', () => showEditor(card), 'btn', 'edit'));
-  if (card.status !== 'done') actions.append(button('Mark done', () => statusAction('done'), 'btn', 'check'));
-  if (card.status !== 'review')
-    actions.append(button('Send to review', () => statusAction('review'), 'btn', 'review'));
-  if (card.status === 'done') actions.append(button('Reopen', () => statusAction('open')));
-  actions.append(
-    button('Add image', () => images.toggleUpload(), 'btn', 'image'),
-    button(
-      card.archived ? 'Restore' : 'Archive',
-      () => archiveAction(!card.archived),
-      'btn',
-      'archive',
-    ),
-    button(
-      'Copy link',
-      async () => {
-        const url = new URL(uri(card.id), location.origin).href;
-        try {
-          await navigator.clipboard.writeText(url);
-          if (version === sheetVersion) sheetMessage('Card link copied.');
-        } catch {
-          if (version !== sheetVersion) return;
-          let input = detail.querySelector('.copy-input');
-          if (!input) {
-            input = node('input', 'copy-input');
-            input.readOnly = true;
-            input.setAttribute('aria-label', 'Card link');
-            actions.after(input);
+
+  const renderActions = () => {
+    actions.replaceChildren();
+    if (card.status !== 'done') actions.append(button('Mark done', () => statusAction('done'), 'btn', 'check'));
+    if (card.status !== 'review') actions.append(button('Send to review', () => statusAction('review'), 'btn', 'review'));
+    if (card.status === 'done') actions.append(button('Reopen', () => statusAction('open')));
+    actions.append(
+      button('Details', () => {
+        propsPanel.hidden = !propsPanel.hidden;
+        if (!propsPanel.hidden) propStatus.focus();
+      }, 'btn', 'edit'),
+      button('Add image', () => images.toggleUpload(), 'btn', 'image'),
+      button('Mark unread', () => {
+        markCardUnread(card);
+        closeDoc(true);
+        notify('Marked as unread.');
+      }, 'btn'),
+      button(card.archived ? 'Restore' : 'Archive', () => archiveAction(!card.archived), 'btn', 'archive'),
+      button(
+        'Copy link',
+        async () => {
+          const url = new URL(uri(card.id), location.origin).href;
+          try {
+            await navigator.clipboard.writeText(url);
+            if (version === sheetVersion) sheetMessage('Card link copied.');
+          } catch {
+            if (version !== sheetVersion) return;
+            let input = detail.querySelector('.copy-input');
+            if (!input) {
+              input = node('input', 'copy-input');
+              input.readOnly = true;
+              input.setAttribute('aria-label', 'Card link');
+              actions.after(input);
+            }
+            input.value = url;
+            input.focus();
+            input.select();
+            sheetMessage('Select and copy this card link.');
           }
-          input.value = url;
-          input.focus();
-          input.select();
-          sheetMessage('Select and copy this card link.');
-        }
-      },
-      'btn',
-      'link',
-    ),
+        },
+        'btn',
+        'link',
+      ),
+    );
+  };
+  renderActions();
+
+  detail.append(
+    topPills,
+    titleInput,
+    meta,
+    actions,
+    propsPanel,
+    images.uploadPanel,
+    images.section,
+    rich.wrap,
+    backlinks,
+    comments,
   );
-  // Images sit right at the top of the document, above the rendered Markdown body.
-  detail.append(meta, actions, images.uploadPanel, images.section, renderBody(card.body || ''), commentSection(card, version));
+  setDocSaveState('Saved', 'saved');
 }
 function commentSection(card, version) {
   const section = node('section', 'comments-section'),
@@ -1809,7 +2666,8 @@ function commentSection(card, version) {
     if (!text || submit.disabled) return;
     submit.disabled = true;
     try {
-      await request(`${cardAPI(card.id)}/comments`, json('POST', { body: text }));
+      const { comment } = await request(`${cardAPI(card.id)}/comments`, json('POST', { body: text }));
+      markCardRead({ id: card.id, updatedAt: comment?.createdAt || new Date().toISOString() });
       if (version === sheetVersion) {
         input.value = '';
         await fetchComments();
@@ -1948,7 +2806,33 @@ function topImageSection(card, version) {
           },
           'btn sm ghost',
         );
-        capBar.append(capText, editCapBtn);
+        const delImgBtn = button(
+          'Delete',
+          async () => {
+            delImgBtn.disabled = true;
+            delImgBtn.textContent = 'Deleting…';
+            try {
+              await request(`${cardAPI(card.id)}/images/${encodeURIComponent(item.id)}`, { method: 'DELETE' });
+              if (version === sheetVersion) {
+                figure.remove();
+                gallery.classList.toggle('single', gallery.childElementCount === 1);
+                section.hidden = !gallery.hasChildNodes();
+                sheetMessage('Image deleted.');
+              }
+            } catch (error) {
+              if (error !== stale && version === sheetVersion) {
+                delImgBtn.disabled = false;
+                delImgBtn.textContent = 'Delete';
+                sheetMessage(message(error));
+              }
+            }
+          },
+          'btn sm ghost danger-text',
+        );
+        delImgBtn.setAttribute('aria-label', `Delete ${item.caption || item.name || 'image'}`);
+        const capActions = node('div', 'doc-caption-actions');
+        capActions.append(editCapBtn, delImgBtn);
+        capBar.append(capText, capActions);
         figure.append(zoom, capBar);
         gallery.append(figure);
       }
@@ -2250,126 +3134,69 @@ function showNewProject() {
     }
   });
 }
-function editorImagesSection(card, version) {
-  const wrap = node('div', 'field editor-images');
-  wrap.hidden = true;
-  const label = node('span', 'field-label', 'Images');
-  const grid = node('div', 'editor-images-grid');
-  wrap.append(label, grid);
-
-  const load = async () => {
-    try {
-      const { images } = await request(`${cardAPI(card.id)}/images`);
-      if (version !== sheetVersion) return;
-      grid.replaceChildren();
-      if (!images.length) {
-        wrap.hidden = true;
-        return;
-      }
-      wrap.hidden = false;
-      for (const item of images) {
-        const url = safeImageURL(item.url);
-        if (!url) continue;
-        const tile = node('div', 'editor-image-item');
-        const img = node('img');
-        img.loading = 'lazy';
-        img.src = url;
-        img.alt = item.caption || item.name || 'Card image';
-        const caption = node('span', 'editor-image-meta', item.caption || item.name || 'Image');
-        caption.title = item.caption || item.name || '';
-        const delBtn = button('Delete', async () => {
-          delBtn.disabled = true;
-          delBtn.textContent = 'Deleting…';
-          try {
-            await request(`${cardAPI(card.id)}/images/${encodeURIComponent(item.id)}`, { method: 'DELETE' });
-            if (version === sheetVersion) {
-              tile.remove();
-              if (!grid.hasChildNodes()) wrap.hidden = true;
-              sheetMessage('Image deleted.');
-            }
-          } catch (error) {
-            if (error !== stale && version === sheetVersion) {
-              delBtn.disabled = false;
-              delBtn.textContent = 'Delete';
-              sheetMessage(message(error));
-            }
-          }
-        }, 'btn sm danger');
-        delBtn.setAttribute('aria-label', `Delete ${item.caption || item.name || 'image'}`);
-        const row = node('div', 'editor-image-bar');
-        row.append(caption, delBtn);
-        tile.append(img, row);
-        grid.append(tile);
-      }
-    } catch {
-      // Leave section hidden if image storage is not configured.
-    }
-  };
-  load();
-  return wrap;
-}
 function showEditor(card) {
+  if (card) {
+    showCard(card);
+    return;
+  }
   const version = ++sheetVersion;
-  docSheet(card ? 'Edit card' : 'New card');
-  const form = node('form'),
+  docSheet('New card', { customHeader: true });
+  const form = node('form', 'new-doc-form'),
     fields = node('div', 'fields');
-  const title = editorInput('input', 'title', card?.title);
+
+  const title = node('textarea', 'doc-title-input');
+  title.id = 'doc-title';
+  title.name = 'title';
+  title.rows = 1;
   title.required = true;
   title.maxLength = 200;
-  title.placeholder = 'Give this card a title';
-  const body = editorInput('textarea', 'body', card?.body);
-  body.maxLength = 20000;
-  body.rows = 10;
-  body.placeholder = 'Write Markdown notes, headings, tables, code blocks, or checklists (- [ ] item)…';
-  const bodyField = field('Body', body),
-    hint = node('p', 'help', 'Paste a card link into your notes, or use [label](/?card=id).');
-  hint.id = 'link-hint';
-  body.setAttribute('aria-describedby', hint.id);
-  bodyField.append(hint);
+  title.placeholder = 'Untitled note';
+  title.setAttribute('aria-label', 'Card title');
+
+  const submitCreate = () => form.requestSubmit();
+  const rich = buildRichEditorWidget({
+    initialMarkdown: '',
+    placeholder: 'Write simple Markdown notes… (## heading, **bold**, - list, > quote)',
+    onSaveShortcut: submitCreate,
+  });
+
+  title.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      rich.editor.focus();
+    } else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 's') {
+      e.preventDefault();
+      submitCreate();
+    }
+  });
+
   const status = editorInput('select', 'status');
   for (const [value, label] of Object.entries(statuses)) {
     const opt = node('option', '', label);
     opt.value = value;
     status.append(opt);
   }
-  status.value = card?.status || 'open';
+  status.value = 'open';
   const type = node('label', 'check-label'),
     isTask = editorInput('input', 'isTask');
   isTask.type = 'checkbox';
-  isTask.checked = card?.isTask ?? state.view === 'todos';
+  isTask.checked = state.view === 'todos';
   type.append(isTask, 'This is a to-do');
-  const starting = editorInput('input', 'startingDate', card?.startingDate);
+  const starting = editorInput('input', 'startingDate', '');
   starting.type = 'date';
-  const ending = editorInput('input', 'endingDate', card?.endingDate);
+  const ending = editorInput('input', 'endingDate', '');
   ending.type = 'date';
   const defaultProject =
-    card?.project ?? (state.project !== 'all' && state.project !== '__unassigned__' ? state.project : '');
+    state.project !== 'all' && state.project !== '__unassigned__' ? state.project : '';
   const project = editorInput('input', 'project', defaultProject);
   project.maxLength = 60;
   project.placeholder = 'Optional (pick or type a new project)';
   project.setAttribute('list', 'project-suggestions');
-  const datalist = node('datalist');
-  datalist.id = 'project-suggestions';
-  const projNames = new Set(state.projects.map((p) => p.name));
-  for (const c of state.cards) if (c.project) projNames.add(c.project);
-  for (const name of [...projNames].sort((a, b) => a.localeCompare(b))) {
-    const opt = node('option');
-    opt.value = name;
-    datalist.append(opt);
-  }
-  const assignee = editorInput('input', 'assignee', card?.assignee);
+  const assignee = editorInput('input', 'assignee', '');
   assignee.maxLength = 60;
   assignee.placeholder = 'Optional (e.g. growth, scout, Owner)';
   assignee.setAttribute('list', 'agent-suggestions');
-  const agentList = node('datalist');
-  agentList.id = 'agent-suggestions';
-  const agentNames = new Set(['Owner', ...[...state.agents.values()].map((a) => a.name)]);
-  for (const name of [...agentNames].sort((a, b) => a.localeCompare(b))) {
-    const opt = node('option');
-    opt.value = name;
-    agentList.append(opt);
-  }
-  const author = editorInput('input', 'author', card?.author);
+  const author = editorInput('input', 'author', '');
   author.maxLength = 60;
   author.placeholder = 'Optional (e.g. Owner or agent name)';
   const limits = () => {
@@ -2379,26 +3206,29 @@ function showEditor(card) {
   limits();
   starting.addEventListener('input', limits);
   ending.addEventListener('input', limits);
+
+  const propsWrap = node('details', 'new-doc-props');
+  const summary = node('summary', 'new-doc-props-toggle', 'Details (status, project, assignee, dates)');
+  const propsInner = node('div', 'fields');
   const options = node('div', 'two-col');
   options.append(field('Status', status), type);
   const dates = node('div', 'two-col');
   dates.append(field('Start date (optional)', starting), field('End date (optional)', ending));
   const routing = node('div', 'two-col');
   routing.append(field('Project (optional)', project), field('Assigned to (optional)', assignee));
-  fields.append(field('Title', title), bodyField);
-  if (card) fields.append(editorImagesSection(card, version));
-  fields.append(options, dates, routing, field('Author (optional)', author), datalist, agentList);
+  propsInner.append(options, routing, dates, field('Author (optional)', author), ...buildDatalists());
+  propsWrap.append(summary, propsInner);
+
+  fields.append(title, rich.wrap, propsWrap);
   const buttons = node('div', 'form-bottom'),
-    save = node('button', 'btn primary', 'Save card');
+    save = node('button', 'btn primary', 'Create card');
   save.type = 'submit';
-  buttons.append(
-    button('Cancel', () => (card ? showCard(card) : closeDoc(true))),
-    save,
-  );
+  buttons.append(button('Cancel', () => closeDoc(true)), save);
   form.append(fields, buttons);
   $('doc-detail').append(form);
   title.focus();
   title.addEventListener('input', () => title.setCustomValidity(''));
+
   form.addEventListener('submit', async (e) => {
     e.preventDefault();
     if (save.disabled) return;
@@ -2407,9 +3237,14 @@ function showEditor(card) {
       title.reportValidity();
       return;
     }
+    const bodyMd = rich.editor.getMarkdown();
+    if ([...bodyMd].length > 20000) {
+      sheetMessage('Body exceeds the 20,000 character limit.');
+      return;
+    }
     const values = {
       title: title.value.trim(),
-      body: body.value,
+      body: bodyMd,
       status: status.value,
       isTask: isTask.checked,
       startingDate: starting.value || null,
@@ -2418,30 +3253,21 @@ function showEditor(card) {
       assignee: assignee.value.trim().replace(/^@+/, '') || null,
       author: author.value.trim() || null,
     };
-    // Send only edited fields, so fixing a typo doesn't undo an agent's status change.
-    const edit = card
-      ? Object.fromEntries(Object.entries(values).filter(([key, v]) => (card[key] ?? null) !== v))
-      : values;
-    if (card && !Object.keys(edit).length) {
-      showCard(card);
-      return;
-    }
     save.disabled = true;
-    sheetMessage('Saving…');
+    setDocSaveState('Creating…', 'saving');
     try {
-      const { card: saved } = await request(
-        card ? cardAPI(card.id) : '/api/cards',
-        json(card ? 'PATCH' : 'POST', edit),
-      );
+      const { card: saved } = await request('/api/cards', json('POST', values));
+      markCardRead(saved);
       if (version === sheetVersion) {
-        replaceCardURL(saved.id, !card);
+        replaceCardURL(saved.id, true);
         showCard(saved);
-        sheetMessage('Card saved.');
+        sheetMessage('Card created.');
       }
       refresh();
     } catch (error) {
       if (error !== stale && version === sheetVersion) {
         save.disabled = false;
+        setDocSaveState('Error', 'error');
         sheetMessage(message(error));
       }
     }

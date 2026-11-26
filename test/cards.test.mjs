@@ -29,6 +29,7 @@ describe('cards HTTP contract', { concurrency: false }, () => {
     cardExists = cards.cardExists;
     app.locals.notifyReview = async () => {};
     app.use('/api/cards', cards.cardsRouter);
+    app.use('/api/activity', cards.activityRouter);
     app.use('/api/agents', cards.agentsRouter);
     app.use('/api/projects', cards.projectsRouter);
     server = app.listen(0, '127.0.0.1');
@@ -433,5 +434,80 @@ describe('cards HTTP contract', { concurrency: false }, () => {
 
     // Reject invalid archived query value
     assert.equal((await fetch(`${base}?archived=maybe`)).status, 400);
+  });
+
+  it('returns backlinks from card bodies and comments while excluding self-links and archived cards', async () => {
+    const target = await create({ title: 'Design System', project: 'Core' });
+    // Self-reference should never show up in backlinks
+    await patch(target.id, { body: `Self ref [Design](/?card=${target.id})` });
+
+    const bodyRef = await create({
+      title: 'Homepage Spec',
+      project: 'Marketing',
+      body: `Follow [Design System](/?card=${target.id}) for spacing tokens.`,
+    });
+    const wikiRef = await create({
+      title: 'Mobile Notes',
+      project: 'Core',
+      body: `See [[${target.id}|Design System]] for palette rules.`,
+    });
+    const commentHost = await create({ title: 'Sprint Review', project: 'Core', body: 'General notes.' });
+    await fetch(`${base}/${commentHost.id}/comments`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Agent-Name': 'Scout' },
+      body: JSON.stringify({ body: `Linked in review: /?card=${target.id}` }),
+    });
+    const archivedRef = await create({
+      title: 'Archived Draft',
+      body: `Old ref /?card=${target.id}`,
+      archived: true,
+    });
+
+    const res = await fetch(`${base}/${target.id}/backlinks`);
+    assert.equal(res.status, 200);
+    const { backlinks } = await res.json();
+    const ids = backlinks.map(b => b.id);
+    assert.equal(ids.includes(target.id), false);
+    assert.equal(ids.includes(archivedRef.id), false);
+    assert.equal(ids.includes(bodyRef.id), true);
+    assert.equal(ids.includes(wikiRef.id), true);
+    assert.equal(ids.includes(commentHost.id), true);
+    assert.equal(backlinks.find(b => b.id === bodyRef.id).source, 'body');
+    assert.equal(backlinks.find(b => b.id === commentHost.id).source, 'comment');
+    assert.ok(backlinks.find(b => b.id === bodyRef.id).snippet.includes('Design System'));
+  });
+
+  it('returns chronological activity events filtered by project and agent', async () => {
+    const origin = base.replace(/\/api\/cards$/, '');
+    const alpha = await create({ title: 'SEO Checklist', project: 'Growth', author: 'Scout' });
+    await new Promise(r => setTimeout(r, 15));
+    await patch(alpha.id, { body: 'Updated with **keyword clusters**.' });
+    await new Promise(r => setTimeout(r, 15));
+    const cRes = await fetch(`${base}/${alpha.id}/comments`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Agent-Name': 'Planner' },
+      body: JSON.stringify({ body: 'Looks solid, ship it.' }),
+    });
+    assert.equal(cRes.status, 201);
+
+    const allRes = await fetch(`${origin}/api/activity?project=Growth`);
+    assert.equal(allRes.status, 200);
+    const { events } = await allRes.json();
+    const forAlpha = events.filter(e => e.cardId === alpha.id);
+    const types = forAlpha.map(e => e.type);
+    assert.ok(types.includes('card.created'));
+    assert.ok(types.includes('comment.created'));
+    // Most recent event for this card is the comment
+    assert.equal(forAlpha[0].type, 'comment.created');
+    assert.equal(forAlpha[0].actor, 'Planner');
+    assert.equal(forAlpha[0].detail, 'Looks solid, ship it.');
+
+    // Filter by agent
+    const plannerRes = await (await fetch(`${origin}/api/activity?agent=planner`)).json();
+    assert.ok(plannerRes.events.some(e => e.cardId === alpha.id && e.type === 'comment.created'));
+    assert.ok(plannerRes.events.every(e => e.actor.toLowerCase() === 'planner'));
+
+    // Reject invalid limit
+    assert.equal((await fetch(`${origin}/api/activity?limit=0`)).status, 400);
   });
 });

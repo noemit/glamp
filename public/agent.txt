@@ -29,9 +29,15 @@ Every new comment bumps the card's `updatedAt` timestamp, so `updatedSince` catc
    - archived=false|true|all     Default false (active cards only); true returns archived cards
    -> 200 { "cards": [ ... ] }
 
-2. Read a single card:
+2. Read a single card (and its backlinks):
    GET /api/cards/<CARD_UUID>
    -> 200 { "card": { ... } }
+   GET /api/cards/<CARD_UUID>/backlinks
+   -> 200 { "backlinks": [ { "id": "...", "title": "...", "status": "...", "project": "...", "source": "body|comment", "snippet": "..." } ] }
+
+2b. Workspace activity timeline:
+   GET /api/activity?project=<name>&agent=<name>&limit=50
+   -> 200 { "events": [ { "id": "...", "type": "card.created|card.updated|comment.created|image.added", "timestamp": "...", "actor": "...", "cardId": "...", "cardTitle": "..." } ] }
 
 3. Create a card:
    POST /api/cards
