@@ -279,13 +279,68 @@ const json = (method, value) => ({
   body: JSON.stringify(value),
 });
 
-function resetFilters() {
-  state.filters = { type: 'all', time: 'all', status: 'all', agent: 'all', unread: false };
-  $('filter-type').value = 'all';
-  $('filter-time').value = 'all';
-  $('filter-status').value = 'all';
-  $('filter-agent').value = 'all';
+const FILTERS_STORAGE_KEY = 'glamp:view-filters:v1';
+const validFilterTypes = new Set(['all', 'task', 'note']);
+const validFilterTimes = new Set(['all', 'today', 'upcoming', 'past', 'unscheduled']);
+const validFilterStatuses = new Set(['all', 'open', 'review', 'done']);
+
+function defaultFiltersFor(view) {
+  return {
+    type: 'all',
+    time: view === 'todos' ? 'today' : 'all',
+    status: 'all',
+    agent: 'all',
+    unread: false,
+  };
+}
+function normalizeViewFilters(view, raw) {
+  const base = defaultFiltersFor(view);
+  if (!raw || typeof raw !== 'object') return base;
+  return {
+    type: validFilterTypes.has(raw.type) ? raw.type : base.type,
+    time: validFilterTimes.has(raw.time) ? raw.time : base.time,
+    status: validFilterStatuses.has(raw.status) ? raw.status : base.status,
+    agent: typeof raw.agent === 'string' && raw.agent ? raw.agent : 'all',
+    unread: Boolean(raw.unread),
+  };
+}
+function loadSavedViewFilters() {
+  try {
+    const raw = localStorage.getItem(FILTERS_STORAGE_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === 'object') return parsed;
+    }
+  } catch { /* ignore storage restrictions */ }
+  return {};
+}
+let savedViewFilters = loadSavedViewFilters();
+function persistCurrentViewFilters() {
+  savedViewFilters[state.view] = { ...state.filters };
+  try {
+    localStorage.setItem(FILTERS_STORAGE_KEY, JSON.stringify(savedViewFilters));
+  } catch { /* ignore storage quota or private-mode errors */ }
+}
+function syncFilterInputs() {
+  $('filter-type').value = state.filters.type;
+  $('filter-time').value = state.filters.time;
+  $('filter-status').value = state.filters.status;
+  const agentSelect = $('filter-agent');
+  const hasOpt = [...agentSelect.options].some((o) => o.value === state.filters.agent);
+  agentSelect.value = hasOpt ? state.filters.agent : 'all';
   syncFilterChips();
+}
+function loadFiltersForView(view) {
+  state.todoDay = '';
+  state.filters = normalizeViewFilters(view, savedViewFilters[view]);
+  syncFilterInputs();
+}
+
+function resetFilters(persist = true) {
+  state.todoDay = '';
+  state.filters = { type: 'all', time: 'all', status: 'all', agent: 'all', unread: false };
+  if (persist) persistCurrentViewFilters();
+  syncFilterInputs();
 }
 
 function syncProjectOptions() {
@@ -400,7 +455,7 @@ function lock(reason = '') {
   state.month = new Date();
   state.selectedDay = '';
   state.todoDay = '';
-  resetFilters();
+  resetFilters(false);
   $('workspace').hidden = true;
   $('doc-view').hidden = true;
   $('doc-detail').replaceChildren();
@@ -447,7 +502,7 @@ async function checkSession(restore = false) {
     $('project-switcher').hidden = false;
     $('account').hidden = false;
     $('open-archive').hidden = false;
-    syncFilterChips();
+    loadFiltersForView(state.view);
     refresh();
     syncLocation();
     $('login').disabled = false;
@@ -546,7 +601,7 @@ $('brand-home').addEventListener('click', () => {
   if (dialog.open) closeDialog();
   state.view = 'docs';
   if (!$('doc-view').hidden) closeDoc(true);
-  syncFilterChips();
+  loadFiltersForView(state.view);
   refresh();
   window.scrollTo({ top: 0, behavior: 'smooth' });
 });
@@ -570,41 +625,50 @@ $('refresh-app').addEventListener('click', async () => {
   }
 });
 
-// Filter chips
+// Filter chips (persisted per view in localStorage)
 $('filter-type').addEventListener('change', (e) => {
   state.filters.type = e.target.value;
+  persistCurrentViewFilters();
   syncFilterChips();
   render();
 });
 $('filter-time').addEventListener('change', (e) => {
+  state.todoDay = '';
   state.filters.time = e.target.value;
+  persistCurrentViewFilters();
   syncFilterChips();
   render();
 });
 $('filter-status').addEventListener('change', (e) => {
   state.filters.status = e.target.value;
+  persistCurrentViewFilters();
   syncFilterChips();
   render();
 });
 $('filter-agent').addEventListener('change', (e) => {
   state.filters.agent = e.target.value;
+  persistCurrentViewFilters();
   syncFilterChips();
   render();
 });
 $('filter-unread').addEventListener('click', () => {
   state.filters.unread = !state.filters.unread;
+  persistCurrentViewFilters();
   syncFilterChips();
   render();
 });
 $('mark-all-read').addEventListener('click', () => {
   markAllCardsRead();
-  if (state.filters.unread) state.filters.unread = false;
+  if (state.filters.unread) {
+    state.filters.unread = false;
+    persistCurrentViewFilters();
+  }
   syncFilterChips();
   render();
   notify('All cards marked as read.');
 });
 $('filter-clear').addEventListener('click', () => {
-  resetFilters();
+  resetFilters(true);
   render();
 });
 
@@ -675,7 +739,7 @@ $('views').addEventListener('click', (e) => {
     state.activityWatermark = readState.activitySeenAt || '';
   }
   if (!$('doc-view').hidden) closeDoc(true);
-  syncFilterChips();
+  loadFiltersForView(state.view);
   if (prevView === 'archive' || state.view === 'activity') refresh();
   else render();
 });
@@ -684,7 +748,7 @@ $('open-archive').addEventListener('click', () => {
   const wasArchive = state.view === 'archive';
   state.view = wasArchive ? 'docs' : 'archive';
   if (!$('doc-view').hidden) closeDoc(true);
-  syncFilterChips();
+  loadFiltersForView(state.view);
   refresh();
   window.scrollTo({ top: 0, behavior: 'smooth' });
 });
@@ -714,8 +778,9 @@ function hasActiveFilters() {
   );
 }
 
-function applyFilters(cards, { ignoreUnread = false } = {}) {
+function applyFilters(cards, { ignoreUnread = false, ignoreTime = false } = {}) {
   const now = new Date();
+  const today = dayKey(now);
   return cards.filter((card) => {
     if (state.project === '__unassigned__') {
       if (card.project) return false;
@@ -729,7 +794,17 @@ function applyFilters(cards, { ignoreUnread = false } = {}) {
     }
     if (state.view !== 'board' && state.filters.status !== 'all' && card.status !== state.filters.status)
       return false;
-    if (state.filters.time !== 'all' && cardTimeBucket(card, now) !== state.filters.time) return false;
+    if (!ignoreTime) {
+      if (state.view === 'todos' && state.todoDay) {
+        if (!entriesOn([card], state.todoDay).length) return false;
+      } else if (state.view === 'todos' && state.filters.time === 'today') {
+        const isDueToday = cardTimeBucket(card, now) === 'today';
+        const isCreatedToday = dayKey(new Date(card.createdAt)) === today;
+        if (!isDueToday && !isCreatedToday) return false;
+      } else if (state.filters.time !== 'all' && cardTimeBucket(card, now) !== state.filters.time) {
+        return false;
+      }
+    }
     if (state.filters.agent !== 'all') {
       const members = card.contributors || (card.author ? [card.author] : []);
       const assignedMatch = (card.assignee || '').toLowerCase() === state.filters.agent;
@@ -779,7 +854,7 @@ function blankState() {
       'archive',
       button('Back to Notes', () => {
         state.view = 'docs';
-        syncFilterChips();
+        loadFiltersForView(state.view);
         refresh();
       }),
     );
@@ -837,7 +912,7 @@ function render() {
   $('card-count').textContent = String(cards.length);
   if (state.view === 'board') results.append(boardView(cards));
   else if (state.view === 'calendar') results.append(calendarView(cards));
-  else if (state.view === 'todos') results.append(todoView(cards));
+  else if (state.view === 'todos') results.append(todoView(cards, applyFilters(state.cards, { ignoreTime: true })));
   else if (!cards.length) results.append(blankState());
   else results.append(docsView(cards));
 }
@@ -1270,45 +1345,52 @@ function weekDaysStartingMonday(now = new Date()) {
   });
 }
 
-function todoView(cards) {
+function todoView(cards, weekCards = cards) {
   const shell = node('div', 'todo-shell');
   const now = new Date();
   const today = dayKey(now);
   const week = weekDaysStartingMonday(now);
+  const activeDay = state.todoDay || (state.filters.time === 'today' ? today : '');
+
+  const showAllTodos = () => {
+    state.todoDay = '';
+    state.filters.time = 'all';
+    persistCurrentViewFilters();
+    syncFilterInputs();
+    render();
+  };
 
   const stripWrap = node('section', 'week-strip-wrap');
   stripWrap.setAttribute('aria-label', 'This week');
   const stripHead = node('div', 'week-strip-head');
   stripHead.append(node('span', 'week-month', monthFormat.format(now)));
-  if (state.todoDay) {
-    stripHead.append(
-      button(
-        'Show all to-dos',
-        () => {
-          state.todoDay = '';
-          render();
-        },
-        'chip-reset',
-      ),
-    );
+  if (state.todoDay || state.filters.time !== 'all') {
+    stripHead.append(button('Show all to-dos', showAllTodos, 'chip-reset'));
   }
   stripWrap.append(stripHead);
 
   const strip = node('div', 'week-strip');
   for (const d of week) {
-    const dayCards = entriesOn(cards, d.key).map((e) => e.card);
+    const dayCards = entriesOn(weekCards, d.key).map((e) => e.card);
     const doneCount = dayCards.filter((c) => c.status === 'done').length;
     const openCount = dayCards.length - doneCount;
     let tone = '';
     if (dayCards.length) tone = openCount === 0 ? ' all-done' : ' has-open';
-    const isSelected = state.todoDay === d.key;
+    const isSelected = activeDay === d.key;
     const cls = `week-day${tone}${d.key === today ? ' is-today' : ''}${isSelected ? ' is-selected' : ''}`;
     const btn = node('button', cls);
     btn.type = 'button';
     btn.setAttribute('aria-pressed', String(isSelected));
     btn.setAttribute('aria-label', `${displayDate(d.date)}, ${openCount} open, ${doneCount} done`);
     btn.addEventListener('click', () => {
-      state.todoDay = state.todoDay === d.key ? '' : d.key;
+      if (d.key === today) {
+        state.todoDay = '';
+        state.filters.time = state.filters.time === 'today' ? 'all' : 'today';
+        persistCurrentViewFilters();
+        syncFilterInputs();
+      } else {
+        state.todoDay = state.todoDay === d.key ? '' : d.key;
+      }
       render();
     });
     btn.append(node('span', 'week-day-dow', d.dowLabel), node('span', 'week-day-cap', String(d.num)));
@@ -1327,15 +1409,22 @@ function todoView(cards) {
   stripWrap.append(strip);
   shell.append(stripWrap);
 
-  const visible = state.todoDay ? entriesOn(cards, state.todoDay).map((e) => e.card) : cards;
+  const visible = cards;
   const sheetCard = node('section', 'todo-card-sheet');
   const head = node('div', 'todo-sheet-head');
   const titleWrap = node('div', 'todo-sheet-title');
+  const timeHeadings = {
+    today: 'To-Do Today',
+    upcoming: 'Upcoming To-dos',
+    past: 'Past To-dos',
+    unscheduled: 'Unscheduled To-dos',
+    all: 'All To-dos',
+  };
   const headingText = state.todoDay
     ? state.todoDay === today
       ? 'To-Do Today'
       : displayDate(localDate(state.todoDay))
-    : 'To-Do Today';
+    : timeHeadings[state.filters.time] || 'All To-dos';
   const doneTotal = visible.filter((c) => c.status === 'done').length;
   titleWrap.append(
     node('h3', '', headingText),
@@ -1345,15 +1434,12 @@ function todoView(cards) {
   sheetCard.append(head);
 
   if (!visible.length) {
-    const emptyBox = state.todoDay
+    const emptyBox = state.todoDay || state.filters.time === 'today'
       ? empty(
-          'Nothing scheduled for this day',
-          'Pick another day on the strip or show all to-dos.',
+          activeDay === today ? 'Nothing due today' : 'Nothing scheduled for this day',
+          'Pick another day on the strip, show all to-dos, or add a new one.',
           'task',
-          button('Show all to-dos', () => {
-            state.todoDay = '';
-            render();
-          }),
+          button('Show all to-dos', showAllTodos),
         )
       : blankState();
     shell.append(emptyBox);
@@ -1923,12 +2009,16 @@ function renderBody(text) {
 }
 function buildRichEditorWidget({
   initialMarkdown = '',
+  editable = true,
   placeholder = 'Write simple Markdown notes… (## heading, **bold**, - list, > quote)',
   currentCardId = null,
   onChange,
   onSaveShortcut,
+  onDoneEditing = null,
 }) {
-  const wrap = node('div', 'rich-editor-wrap');
+  const wrap = node('div', `rich-editor-wrap${editable ? ' is-editing' : ''}`);
+  const dock = node('div', 'editor-toolbar-dock');
+  dock.hidden = !editable;
   const toolbar = node('div', 'editor-toolbar');
   toolbar.setAttribute('role', 'toolbar');
   toolbar.setAttribute('aria-label', 'Formatting');
@@ -1990,6 +2080,14 @@ function buildRichEditorWidget({
     renderLinkBar();
   });
   toolbar.append(linkBtn, cardLinkBtn);
+  if (onDoneEditing) {
+    const doneBtn = node('button', 'tool-btn tool-done', 'Done');
+    doneBtn.type = 'button';
+    doneBtn.title = 'Finish editing';
+    doneBtn.addEventListener('mousedown', (e) => e.preventDefault());
+    doneBtn.addEventListener('click', () => onDoneEditing());
+    toolbar.append(doneBtn);
+  }
 
   const openEditorHref = (href, cardId) => {
     if (cardId) {
@@ -2003,7 +2101,7 @@ function buildRichEditorWidget({
 
   const renderLinkBar = () => {
     linkBar.replaceChildren();
-    if (!editor) {
+    if (!editor || !editor.isEditable()) {
       linkBar.hidden = true;
       return;
     }
@@ -2146,6 +2244,13 @@ function buildRichEditorWidget({
   host.addEventListener('click', (e) => {
     const a = e.target.closest('a[href]');
     if (!a) return;
+    if (!editor?.isEditable()) {
+      if (a.dataset.cardLink && !e.metaKey && !e.ctrlKey && !e.shiftKey && !e.altKey) {
+        e.preventDefault();
+        openEditorHref(a.getAttribute('href') || '', a.dataset.cardLink);
+      }
+      return;
+    }
     if (e.metaKey || e.ctrlKey) {
       e.preventDefault();
       openEditorHref(a.getAttribute('href') || '', a.dataset.cardLink || '');
@@ -2155,6 +2260,7 @@ function buildRichEditorWidget({
   editor = createMarkdownEditor({
     element: host,
     content: initialMarkdown || '',
+    editable,
     placeholder,
     onUpdate: () => {
       syncToolbar();
@@ -2168,8 +2274,23 @@ function buildRichEditorWidget({
   activeEditor = editor;
   syncToolbar();
 
-  wrap.append(toolbar, linkBar, host);
-  return { wrap, editor };
+  const setEditing = (next) => {
+    const on = Boolean(next);
+    editor.setEditable(on);
+    dock.hidden = !on;
+    wrap.classList.toggle('is-editing', on);
+    if (!on) {
+      mode = '';
+      linkBar.hidden = true;
+      wrap.classList.remove('is-focused');
+    } else {
+      syncToolbar();
+    }
+  };
+
+  dock.append(toolbar, linkBar);
+  wrap.append(dock, host);
+  return { wrap, editor, setEditing };
 }
 
 function backlinksSection(card, version) {
@@ -2269,6 +2390,7 @@ function showCard(initialCard) {
   titleInput.rows = 1;
   titleInput.maxLength = 200;
   titleInput.value = card.title;
+  titleInput.readOnly = true;
   titleInput.placeholder = 'Untitled note';
   titleInput.setAttribute('aria-label', 'Card title');
 
@@ -2348,6 +2470,7 @@ function showCard(initialCard) {
   propActions.append(button('Close', () => { propsPanel.hidden = true; }, 'btn sm ghost'), savePropsBtn);
   propsPanel.append(row1, row2, row3, field('Author', propAuthor), propActions, ...buildDatalists());
 
+  let editing = false;
   let lastSavedTitle = card.title;
   let lastSavedBody = card.body || '';
   let inFlightSave = null;
@@ -2449,12 +2572,33 @@ function showCard(initialCard) {
 
   const rich = buildRichEditorWidget({
     initialMarkdown: card.body || '',
+    editable: false,
     currentCardId: card.id,
     onChange: scheduleAutosave,
     onSaveShortcut: () => saveDraftNow(),
+    onDoneEditing: () => setEditingMode(false),
   });
   // Normalize initial saved body to match Tiptap's Markdown serialization so mere focus doesn't trigger a spurious save.
   lastSavedBody = rich.editor.getMarkdown();
+
+  const setEditingMode = async (next) => {
+    if (next === editing) return;
+    if (next) {
+      editing = true;
+      titleInput.readOnly = false;
+      rich.setEditing(true);
+      renderActions();
+      setDocSaveState('Editing', '');
+      rich.editor.focus();
+    } else {
+      await saveDraftNow({ silent: true });
+      if (version !== sheetVersion) return;
+      editing = false;
+      titleInput.readOnly = true;
+      rich.setEditing(false);
+      renderActions();
+    }
+  };
 
   activeFlushSave = () => {
     if (!isDirty()) return Promise.resolve();
@@ -2552,6 +2696,14 @@ function showCard(initialCard) {
 
   const renderActions = () => {
     actions.replaceChildren();
+    actions.append(
+      button(
+        editing ? 'Done editing' : 'Edit',
+        () => setEditingMode(!editing),
+        editing ? 'btn primary' : 'btn',
+        editing ? 'check' : 'edit',
+      ),
+    );
     if (card.status !== 'done') actions.append(button('Mark done', () => statusAction('done'), 'btn', 'check'));
     if (card.status !== 'review') actions.append(button('Send to review', () => statusAction('review'), 'btn', 'review'));
     if (card.status === 'done') actions.append(button('Reopen', () => statusAction('open')));
@@ -2559,7 +2711,7 @@ function showCard(initialCard) {
       button('Details', () => {
         propsPanel.hidden = !propsPanel.hidden;
         if (!propsPanel.hidden) propStatus.focus();
-      }, 'btn', 'edit'),
+      }, 'btn'),
       button('Add image', () => images.toggleUpload(), 'btn', 'image'),
       button('Mark unread', () => {
         markCardUnread(card);
@@ -2608,7 +2760,7 @@ function showCard(initialCard) {
     backlinks,
     comments,
   );
-  setDocSaveState('Saved', 'saved');
+  setDocSaveState('');
 }
 function commentSection(card, version) {
   const section = node('section', 'comments-section'),
@@ -3182,7 +3334,8 @@ function showEditor(card) {
   isTask.type = 'checkbox';
   isTask.checked = state.view === 'todos';
   type.append(isTask, 'This is a to-do');
-  const starting = editorInput('input', 'startingDate', '');
+  const defaultStart = state.view === 'todos' ? (state.todoDay || dayKey(new Date())) : '';
+  const starting = editorInput('input', 'startingDate', defaultStart);
   starting.type = 'date';
   const ending = editorInput('input', 'endingDate', '');
   ending.type = 'date';

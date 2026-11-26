@@ -2152,6 +2152,7 @@ dialog::backdrop {
 /* Wide Document View (replaces cramped modal for cards) */
 .doc-sheet {
   padding: 0;
+  overflow: visible;
 }
 
 .doc-topbar {
@@ -2161,6 +2162,7 @@ dialog::backdrop {
   gap: 12px;
   padding: 14px 24px;
   border-bottom: 1px solid var(--line);
+  border-radius: var(--radius-sheet) var(--radius-sheet) 0 0;
   flex-wrap: wrap;
 }
 
@@ -2806,15 +2808,20 @@ dialog::backdrop {
   transition: background-color 0.14s ease, border-color 0.14s ease;
 }
 
-.doc-title-input:hover {
+.doc-title-input:hover:not([readonly]) {
   background: var(--card-bg);
 }
 
-.doc-title-input:focus {
+.doc-title-input:focus:not([readonly]) {
   outline: none;
   background: var(--surface);
   border-color: var(--line-strong);
   box-shadow: 0 0 0 3px rgba(24, 24, 27, 0.06);
+}
+
+.doc-title-input[readonly] {
+  cursor: default;
+  outline: none;
 }
 
 .doc-props-panel {
@@ -2882,8 +2889,20 @@ dialog::backdrop {
   transition: border-color 0.14s ease, background-color 0.14s ease;
 }
 
-.rich-editor-wrap.is-focused {
+.rich-editor-wrap.is-editing.is-focused {
   border-color: var(--line);
+}
+
+.rich-editor-wrap:not(.is-editing) .glamp-editor {
+  min-height: 0;
+  padding: 6px 0 20px;
+}
+
+.editor-toolbar-dock {
+  position: sticky;
+  top: 12px;
+  z-index: 15;
+  margin-bottom: 12px;
 }
 
 .editor-toolbar {
@@ -2892,10 +2911,26 @@ dialog::backdrop {
   flex-wrap: wrap;
   gap: 3px;
   padding: 6px 8px;
-  background: var(--card-bg);
-  border: 1px solid var(--line);
-  border-radius: 11px;
-  margin-bottom: 10px;
+  background: rgba(255, 255, 255, 0.94);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border: 1px solid var(--line-strong);
+  border-radius: 12px;
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.08), 0 1px 3px rgba(15, 23, 42, 0.05);
+}
+
+.tool-btn.tool-done {
+  margin-left: auto;
+  background: var(--accent);
+  color: #ffffff;
+  border-color: var(--accent);
+  padding: 6px 11px;
+}
+
+.tool-btn.tool-done:hover {
+  background: var(--accent-hover);
+  color: #ffffff;
+  border-color: var(--accent-hover);
 }
 
 .tool-btn {
@@ -2949,11 +2984,14 @@ dialog::backdrop {
 }
 
 .editor-link-bar {
-  margin-bottom: 10px;
+  margin-top: 8px;
   padding: 10px 12px;
-  background: var(--card-bg);
-  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.97);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border: 1px solid var(--line-strong);
   border-radius: 11px;
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.08);
 }
 
 .editor-link-form {

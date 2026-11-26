@@ -118,6 +118,7 @@ export function roundTripMarkdown(md) {
 export function createMarkdownEditor({
   element,
   content = '',
+  editable = true,
   placeholder = 'Write notes in Markdown…',
   onUpdate,
   onSelectionUpdate,
@@ -127,6 +128,7 @@ export function createMarkdownEditor({
 }) {
   const editor = new Editor({
     element,
+    editable,
     injectCSS: false,
     extensions: buildExtensions({ placeholder, onSaveShortcut }),
     content: content || '',
@@ -152,6 +154,12 @@ export function createMarkdownEditor({
     },
     setMarkdown(md) {
       editor.commands.setContent(md || '', { contentType: 'markdown', emitUpdate: false });
+    },
+    setEditable(next) {
+      editor.setEditable(Boolean(next));
+    },
+    isEditable() {
+      return editor.isEditable;
     },
     isEmpty() {
       return editor.isEmpty;
